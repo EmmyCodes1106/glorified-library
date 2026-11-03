@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import sql from "@/db";
 import AddBookForm from "./add-book-form";
+import BookActions from "./book-actions";
 
 async function BookList() {
   const books = await sql`
@@ -21,21 +22,29 @@ async function BookList() {
   return (
     <ul className="divide-y rounded border">
       {books.map((book) => (
-        <li key={book.id} className="flex items-center justify-between p-4">
-          <div>
-            <p className="font-medium">{book.title}</p>
-            <p className="text-sm text-gray-500">
-              {book.author} · {book.year}
-            </p>
-          </div>
-          {book.borrower ? (
-            <span className="text-sm text-orange-600">
-              On loan to {book.borrower}, due {book.due}
-            </span>
-          ) : (
-            <span className="text-sm text-green-600">Available</span>
-          )}
-        </li>
+        <li key={book.id} className="p-4">
+  <div className="flex items-center justify-between gap-4">
+    <div>
+      <p className="font-medium">{book.title}</p>
+      <p className="text-sm text-gray-500">
+        {book.author} · {book.year}
+      </p>
+    </div>
+    {book.borrower ? (
+      <span className="text-right text-sm text-orange-600">
+        On loan to {book.borrower}, due {book.due}
+      </span>
+    ) : (
+      <span className="text-right text-sm text-green-600">Available</span>
+    )}
+  </div>
+  <BookActions
+    id={book.id}
+    title={book.title}
+    author={book.author}
+    year={book.year}
+  />
+</li>
       ))}
     </ul>
   );
