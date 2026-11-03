@@ -20,6 +20,9 @@ async function BookList() {
     order by b.title
   `;
 
+  const members = await sql`select id, name from members order by name`;
+  const memberOptions = members.map((m) => ({ id: m.id, name: m.name }));
+
   return (
     <ul className="divide-y rounded border">
       {books.map((book) => (
@@ -46,6 +49,8 @@ async function BookList() {
             title={book.title}
             author={book.author}
             year={book.year}
+            onLoan={Boolean(book.borrower)}
+            members={memberOptions}
           />
         </li>
       ))}
