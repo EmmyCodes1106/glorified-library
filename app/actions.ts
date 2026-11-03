@@ -11,15 +11,18 @@ function checkBook(formData: FormData) {
   const author = String(formData.get("author") ?? "").trim();
   const yearText = String(formData.get("year") ?? "").trim();
 
-  if (!title) return { error: "Please enter a title." };
-  if (!author) return { error: "Please enter an author." };
+  if (!title) return { ok: false as const, error: "Please enter a title." };
+  if (!author) return { ok: false as const, error: "Please enter an author." };
 
   const year = Number(yearText);
   const thisYear = new Date().getFullYear();
   if (!/^\d{1,4}$/.test(yearText) || year < 1 || year > thisYear) {
-    return { error: `Please enter a real year (1 to ${thisYear}).` };
+    return {
+      ok: false as const,
+      error: `Please enter a real year (1 to ${thisYear}).`,
+    };
   }
-  return { title, author, year };
+  return { ok: true as const, title, author, year };
 }
 
 // reuse the author if they exist (ignoring upper/lower case), else add them
@@ -40,7 +43,7 @@ export async function addBook(
   formData: FormData
 ): Promise<FormState> {
   const checked = checkBook(formData);
-  if ("error" in checked) return { message: checked.error };
+  if (!checked.ok) return { message: checked.error };
 
   const authorId = await findOrCreateAuthor(checked.author);
   await sql`
@@ -60,7 +63,7 @@ export async function updateBook(
   if (!Number.isInteger(id)) return { message: "Book not found." };
 
   const checked = checkBook(formData);
-  if ("error" in checked) return { message: checked.error };
+  if (!checked.ok) return { message: checked.error };
 
   const authorId = await findOrCreateAuthor(checked.author);
   const updated = await sql`
@@ -95,6 +98,7 @@ export async function deleteBook(
   revalidatePath("/");
   return { message: "Book deleted.", ok: true };
 }
+
 export async function addMember(
   prev: FormState,
   formData: FormData
@@ -115,6 +119,7 @@ export async function addMember(
   revalidatePath("/members");
   return { message: "Member added.", ok: true };
 }
+
 export async function lendBook(
   prev: FormState,
   formData: FormData
