@@ -95,3 +95,23 @@ export async function deleteBook(
   revalidatePath("/");
   return { message: "Book deleted.", ok: true };
 }
+export async function addMember(
+  prev: FormState,
+  formData: FormData
+): Promise<FormState> {
+  const name = String(formData.get("name") ?? "").trim();
+  const phone = String(formData.get("phone") ?? "").trim();
+
+  if (!name) return { message: "Please enter a name." };
+  if (phone && !/^[0-9+\-()\s]{6,20}$/.test(phone)) {
+    return { message: "Please enter a valid phone number, or leave it empty." };
+  }
+
+  await sql`
+    insert into members (name, phone)
+    values (${name}, ${phone || null})
+  `;
+
+  revalidatePath("/members");
+  return { message: "Member added.", ok: true };
+}

@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import sql from "@/db";
 import AddBookForm from "./add-book-form";
 import BookActions from "./book-actions";
@@ -23,28 +24,30 @@ async function BookList() {
     <ul className="divide-y rounded border">
       {books.map((book) => (
         <li key={book.id} className="p-4">
-  <div className="flex items-center justify-between gap-4">
-    <div>
-      <p className="font-medium">{book.title}</p>
-      <p className="text-sm text-gray-500">
-        {book.author} · {book.year}
-      </p>
-    </div>
-    {book.borrower ? (
-      <span className="text-right text-sm text-orange-600">
-        On loan to {book.borrower}, due {book.due}
-      </span>
-    ) : (
-      <span className="text-right text-sm text-green-600">Available</span>
-    )}
-  </div>
-  <BookActions
-    id={book.id}
-    title={book.title}
-    author={book.author}
-    year={book.year}
-  />
-</li>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="font-medium">{book.title}</p>
+              <p className="text-sm text-gray-500">
+                {book.author} · {book.year}
+              </p>
+            </div>
+            {book.borrower ? (
+              <span className="text-right text-sm text-orange-600">
+                On loan to {book.borrower}, due {book.due}
+              </span>
+            ) : (
+              <span className="text-right text-sm text-green-600">
+                Available
+              </span>
+            )}
+          </div>
+          <BookActions
+            id={book.id}
+            title={book.title}
+            author={book.author}
+            year={book.year}
+          />
+        </li>
       ))}
     </ul>
   );
@@ -53,7 +56,12 @@ async function BookList() {
 export default function Home() {
   return (
     <main className="mx-auto max-w-2xl p-6">
-      <h1 className="mb-6 text-2xl font-bold">Library Manager</h1>
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Library Manager</h1>
+        <Link href="/members" className="underline">
+          Members
+        </Link>
+      </div>
       <AddBookForm />
       <Suspense fallback={<p>Loading books...</p>}>
         <BookList />
