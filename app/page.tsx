@@ -62,7 +62,7 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-2xl p-6">
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Library Manager</h1>
+        <h1 className="text-2xl font-bold">Glorified Library Manager</h1>
         <Link href="/members" className="underline">
           Members
         </Link>
