@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import sql from "@/db";
+import AddBookForm from "./add-book-form";
 
 async function BookList() {
   const books = await sql`
@@ -44,6 +45,7 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-2xl p-6">
       <h1 className="mb-6 text-2xl font-bold">Library Manager</h1>
+      <AddBookForm />
       <Suspense fallback={<p>Loading books...</p>}>
         <BookList />
       </Suspense>
