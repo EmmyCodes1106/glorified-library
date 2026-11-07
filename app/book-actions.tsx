@@ -8,25 +8,32 @@ import {
   returnBook,
   type FormState,
 } from "./actions";
+import BookFormFields, { type BookFormValues } from "./book-form-fields";
+
+type ActiveLoan = {
+  id: number;
+  member: string;
+  due: string;
+};
 
 type Props = {
-  id: number;
-  title: string;
-  author: string;
-  year: number | null;
-  onLoan: boolean;
+  book: BookFormValues & { id: number };
+  available: number;
   members: { id: number; name: string }[];
+  loans: ActiveLoan[];
+  canManage: boolean;
+  canCirculate: boolean;
 };
 
 const initial: FormState = { message: "" };
 
 export default function BookActions({
-  id,
-  title,
-  author,
-  year,
-  onLoan,
+  book,
+  available,
   members,
+  loans,
+  canManage,
+  canCirculate,
 }: Props) {
   const [editing, setEditing] = useState(false);
 
@@ -50,79 +57,139 @@ export default function BookActions({
     initial
   );
 
-  if (editing) {
+  if (!canManage && !canCirculate) return null;
+
+  if (editing && canManage) {
     return (
-      <form action={updateAction} className="mt-3 grid gap-2">
-        <input type="hidden" name="id" value={id} />
-        <input name="title" defaultValue={title} className="rounded border bg-transparent p-2" />
-        <input name="author" defaultValue={author} className="rounded border bg-transparent p-2" />
-        <input name="year" defaultValue={year ?? ""} inputMode="numeric" className="rounded border bg-transparent p-2" />
-        <div className="flex gap-3">
-          <button disabled={updating} className="rounded bg-white px-3 py-1 font-medium text-black disabled:opacity-50">
-            {updating ? "Saving..." : "Save"}
+      <form
+        action={updateAction}
+        className="mt-4 grid gap-3 border-t pt-4 sm:grid-cols-2"
+      >
+        <input type="hidden" name="id" value={book.id} />
+        <BookFormFields book={book} removeCover />
+        <div className="flex flex-wrap gap-3 sm:col-span-2">
+          <button
+            disabled={updating}
+            className="rounded bg-white px-4 py-2 font-medium text-black disabled:opacity-50"
+          >
+            {updating ? "Saving..." : "Save changes"}
           </button>
-          <button type="button" onClick={() => setEditing(false)} className="underline">
+          <button
+            type="button"
+            onClick={() => setEditing(false)}
+            className="underline"
+          >
             Cancel
           </button>
         </div>
         {updateState.message && !updateState.ok && (
-          <p className="text-red-500">{updateState.message}</p>
+          <p className="text-sm text-red-500 sm:col-span-2">
+            {updateState.message}
+          </p>
         )}
       </form>
     );
   }
 
   const errors = [lendState, returnState, deleteState].filter(
-    (s) => s.message && !s.ok
+    (state) => state.message && !state.ok
   );
 
   return (
-    <div className="mt-3 grid gap-2 text-sm">
+    <div className="mt-4 grid gap-3 text-sm">
+      {canCirculate && loans.length > 0 && (
+        <div className="rounded border border-orange-200 bg-orange-50/40 p-3 dark:border-orange-900 dark:bg-orange-950/20">
+          <p className="font-medium text-orange-700 dark:text-orange-400">
+            {loans.length} of {book.totalCopies}{" "}
+            {book.totalCopies === 1 ? "copy" : "copies"} on loan
+          </p>
+          <ul className="mt-2 grid gap-2">
+            {loans.map((loan) => (
+              <li
+                key={loan.id}
+                className="flex flex-wrap items-center justify-between gap-2"
+              >
+                <span className="min-w-0 text-gray-600 dark:text-gray-300">
+                  {loan.member} · due {loan.due}
+                </span>
+                <form action={returnAction}>
+                  <input type="hidden" name="loanId" value={loan.id} />
+                  <button
+                    disabled={returning}
+                    className="rounded border px-3 py-1 disabled:opacity-50"
+                  >
+                    {returning ? "Returning..." : "Record return"}
+                  </button>
+                </form>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-3">
-        {onLoan ? (
-          <form action={returnAction}>
-            <input type="hidden" name="bookId" value={id} />
-            <button disabled={returning} className="rounded border px-3 py-1 disabled:opacity-50">
-              {returning ? "Returning..." : "Record return"}
+        {canCirculate &&
+          (available > 0 ? (
+            <form action={lendAction} className="flex flex-wrap items-center gap-2">
+              <input type="hidden" name="bookId" value={book.id} />
+              <select
+                name="memberId"
+                defaultValue=""
+                required
+                className="w-full min-w-0 rounded border bg-transparent p-1 sm:w-auto"
+              >
+                <option value="">Choose member...</option>
+                {members.map((member) => (
+                  <option key={member.id} value={member.id}>
+                    {member.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                disabled={lending}
+                className="rounded border px-3 py-1 disabled:opacity-50"
+              >
+                {lending ? "Lending..." : "Lend copy"}
+              </button>
+            </form>
+          ) : (
+            <span className="text-sm text-orange-600 dark:text-orange-400">
+              All copies are on loan.
+            </span>
+          ))}
+
+        {canManage && (
+          <>
+            <button onClick={() => setEditing(true)} className="underline">
+              Edit
             </button>
-          </form>
-        ) : (
-          <form action={lendAction} className="flex items-center gap-2">
-            <input type="hidden" name="bookId" value={id} />
-            <select name="memberId" defaultValue="" className="rounded border bg-black p-1">
-              <option value="">Choose member...</option>
-              {members.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-            <button disabled={lending} className="rounded border px-3 py-1 disabled:opacity-50">
-              {lending ? "Lending..." : "Lend (14 days)"}
-            </button>
-          </form>
+
+            <form
+              action={deleteAction}
+              onSubmit={(event) => {
+                if (
+                  !confirm(
+                    `Delete "${book.title}" and all ${book.totalCopies} ${
+                      book.totalCopies === 1 ? "copy" : "copies"
+                    }?`
+                  )
+                ) {
+                  event.preventDefault();
+                }
+              }}
+            >
+              <input type="hidden" name="id" value={book.id} />
+              <button disabled={deleting} className="text-red-500 underline">
+                Delete
+              </button>
+            </form>
+          </>
         )}
-
-        <button onClick={() => setEditing(true)} className="underline">
-          Edit
-        </button>
-
-        <form
-          action={deleteAction}
-          onSubmit={(e) => {
-            if (!confirm(`Delete "${title}"?`)) e.preventDefault();
-          }}
-        >
-          <input type="hidden" name="id" value={id} />
-          <button disabled={deleting} className="text-red-500 underline">
-            Delete
-          </button>
-        </form>
       </div>
 
-      {errors.map((s, i) => (
-        <p key={i} className="text-red-500">
-          {s.message}
+      {errors.map((state, index) => (
+        <p key={index} className="text-red-500">
+          {state.message}
         </p>
       ))}
     </div>

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { getLibraryIdentity } from "@/lib/settings";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -12,10 +13,17 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: "Glorified Library Manager",
-  description: "Lending library catalogue",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  "use cache";
+  const identity = await getLibraryIdentity();
+  return {
+    title: {
+      default: `${identity.name} Manager`,
+      template: `%s · ${identity.name} Manager`,
+    },
+    description: `${identity.name} lending catalogue`,
+  };
+}
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
