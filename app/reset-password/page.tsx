@@ -50,14 +50,14 @@ export default async function ResetPasswordPage({
         <ResetForm token={token} />
       ) : (
         <div className="grid gap-4 text-sm">
-          <p className="rounded border border-red-300 bg-red-50 p-3 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+          <p className="rounded-lg border border-danger/30 bg-danger-soft p-3 text-danger">
             This reset link is invalid or has expired.
           </p>
-          <p className="text-gray-500">
+          <p className="text-muted">
             Request a new link from{" "}
             <Link
               href="/forgot-password"
-              className="underline underline-offset-4"
+              className="font-medium text-brand underline-offset-4 hover:underline"
             >
               the password reset page
             </Link>{" "}

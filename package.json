@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "exceljs": "^4.4.0",
-    "next": "16.4.3",
+    "lucide-react": "^0.468.0",
+    "next": "^16.4.6",
     "pdf-lib": "^1.17.1",
     "postgres": "^4.0.0",
     "react": "19.3.0",

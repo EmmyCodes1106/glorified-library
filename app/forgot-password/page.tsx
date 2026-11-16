@@ -27,7 +27,7 @@ export default async function ForgotPasswordPage() {
       <div className="grid gap-4">
         <ForgotForm />
         {!provider.configured && (
-          <p className="rounded border border-orange-300 bg-orange-50 p-3 text-sm text-orange-800 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-300">
+          <p className="rounded-lg border border-warning/25 bg-warning-soft p-3 text-sm text-warning">
             Email delivery is not configured on this server. If you need a new
             password, ask a super administrator to issue a reset link from the
             Staff page.

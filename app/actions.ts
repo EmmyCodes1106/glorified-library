@@ -1,14 +1,18 @@
 "use server";
 
-import { randomUUID } from "node:crypto";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import sql from "@/db";
 import { authorize } from "@/lib/auth/dal";
 import { logAudit } from "@/lib/auth/audit";
 import { getLendingSettings } from "@/lib/settings";
+import { COVER_TYPES, MAX_COVER_BYTES, deleteCover, saveCoverFile } from "@/lib/covers";
+import {
+  downloadOpenLibraryCover,
+  fetchWorkDescription,
+  searchOpenLibrary,
+  type OpenLibraryBook,
+} from "@/lib/open-library";
 import {
   describeRun,
   notifyBorrowingConfirmation,
@@ -19,6 +23,23 @@ import {
 
 export type FormState = { message: string; ok?: boolean };
 
+function parseIsoDate(value: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return value;
+}
+
 async function sendInBackground(task: () => Promise<void>) {
   try {
     await task();
@@ -26,16 +47,6 @@ async function sendInBackground(task: () => Promise<void>) {
     console.error("Notification delivery failed:", error);
   }
 }
-
-const COVER_DIR = path.join(process.cwd(), "public", "uploads", "covers");
-const COVER_URL_PREFIX = "/uploads/covers/";
-const MAX_COVER_BYTES = 5 * 1024 * 1024;
-const COVER_TYPES = new Map([
-  ["image/jpeg", "jpg"],
-  ["image/png", "png"],
-  ["image/webp", "webp"],
-  ["image/gif", "gif"],
-]);
 
 type CheckedBook = {
   title: string;
@@ -224,32 +235,27 @@ async function readCover(formData: FormData): Promise<CoverResult> {
   if (value.size > MAX_COVER_BYTES) {
     return { error: "Cover images must be 5 MB or smaller." } as const;
   }
-
-  const extension = COVER_TYPES.get(value.type);
-  if (!extension) {
+  if (!COVER_TYPES.has(value.type)) {
     return {
       error: "Cover images must be JPG, PNG, WebP or GIF.",
     } as const;
   }
 
-  await mkdir(COVER_DIR, { recursive: true });
-  const fileName = `${randomUUID()}.${extension}`;
-  await writeFile(
-    path.join(COVER_DIR, fileName),
-    Buffer.from(await value.arrayBuffer())
+  return saveCoverFile(
+    Buffer.from(await value.arrayBuffer()),
+    value.type
   );
-  return { path: `${COVER_URL_PREFIX}${fileName}` } as const;
 }
 
-async function deleteCover(coverPath: string | null | undefined) {
-  if (!coverPath?.startsWith(COVER_URL_PREFIX)) return;
+async function readRemoteCover(formData: FormData): Promise<CoverResult> {
+  const coverUrl = String(formData.get("coverUrl") ?? "").trim();
+  if (!coverUrl) return null;
 
-  const fileName = path.basename(coverPath);
-  try {
-    await unlink(path.join(COVER_DIR, fileName));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  const downloaded = await downloadOpenLibraryCover(coverUrl);
+  if (!downloaded) return null;
+  if ("error" in downloaded) return { error: downloaded.error };
+
+  return saveCoverFile(downloaded.bytes, downloaded.contentType);
 }
 
 async function syncGenres(bookId: number, genreIds: number[]) {
@@ -260,6 +266,45 @@ async function syncGenres(bookId: number, genreIds: number[]) {
       values (${bookId}, ${genreId})
       on conflict do nothing
     `;
+  }
+}
+
+export type OpenLibraryLookupState =
+  | { ok: true; results: OpenLibraryBook[] }
+  | { ok: false; message: string };
+
+export async function searchOpenLibraryAction(
+  query: string
+): Promise<OpenLibraryLookupState> {
+  const access = await authorize("books.manage", "look up book metadata");
+  if (!access.ok) return { ok: false, message: access.message };
+
+  const q = query.trim();
+  if (q.length < 2 || q.length > 100) {
+    return { ok: false, message: "Enter between 2 and 100 characters to search." };
+  }
+
+  try {
+    const results = await searchOpenLibrary(q);
+    return { ok: true, results };
+  } catch {
+    return {
+      ok: false,
+      message: "Could not reach Open Library. Check your connection and try again.",
+    };
+  }
+}
+
+export async function getOpenLibraryWorkAction(
+  workKey: string
+): Promise<string | null> {
+  const access = await authorize("books.manage", "look up book metadata");
+  if (!access.ok) return null;
+
+  try {
+    return await fetchWorkDescription(workKey);
+  } catch {
+    return null;
   }
 }
 
@@ -282,8 +327,12 @@ export async function addBook(
     }
   }
 
-  const cover = await readCover(formData);
+  let cover = await readCover(formData);
   if (cover && "error" in cover) return { message: cover.error };
+  if (!cover) {
+    cover = await readRemoteCover(formData);
+    if (cover && "error" in cover) return { message: cover.error };
+  }
 
   const authorId = await findOrCreateAuthor(checked.author);
   const categoryId = await findOrCreateCategory(checked.category);
@@ -869,12 +918,17 @@ export async function lendBook(
   const bookId = Number(formData.get("bookId"));
   const memberId = Number(formData.get("memberId"));
   const daysText = String(formData.get("days") ?? "").trim();
+  const dueDateText = String(formData.get("dueDate") ?? "").trim();
+  const dueDate = dueDateText ? parseIsoDate(dueDateText) : null;
 
   if (!Number.isInteger(bookId) || bookId < 1) {
     return { message: "Book not found." };
   }
   if (!Number.isInteger(memberId) || memberId < 1) {
     return { message: "Please choose a member." };
+  }
+  if (dueDateText && !dueDate) {
+    return { message: "Choose a valid due date for this loan." };
   }
   if (
     daysText &&
@@ -985,12 +1039,28 @@ export async function lendBook(
         };
       }
 
-      let days = Number(daysText);
-      if (!daysText) {
-        const [settings] = await tx`
-          select default_loan_days from circulation_settings where id
+      let days: number;
+      if (dueDate) {
+        const [term] = await tx`
+          select (${dueDate}::date - current_date)::int as days
         `;
-        days = settings?.default_loan_days ?? 14;
+        if (term.days < 1) {
+          return {
+            error: "The due date must be at least one day from today.",
+          };
+        }
+        if (term.days > 365) {
+          return { error: "Loan terms cannot exceed 365 days." };
+        }
+        days = term.days;
+      } else {
+        days = daysText ? Number(daysText) : 0;
+        if (!days) {
+          const [settings] = await tx`
+            select default_loan_days from circulation_settings where id
+          `;
+          days = settings?.default_loan_days ?? 14;
+        }
       }
 
       const [created] = await tx`
@@ -1140,6 +1210,119 @@ export async function renewLoan(
   revalidatePath("/fines");
   return {
     message: `"${outcome.title}" renewed for ${outcome.days} days · due ${outcome.due}.`,
+    ok: true,
+  };
+}
+
+export async function updateLoanDueDate(
+  prev: FormState,
+  formData: FormData
+): Promise<FormState> {
+  const access = await authorize("circulation.manage", "change a due date");
+  if (!access.ok) return { message: access.message };
+
+  const loanId = Number(formData.get("loanId"));
+  const dueDate = parseIsoDate(String(formData.get("dueDate") ?? "").trim());
+
+  if (!Number.isInteger(loanId) || loanId < 1) {
+    return { message: "Loan not found." };
+  }
+  if (!dueDate) {
+    return { message: "Choose a valid due date." };
+  }
+
+  type DueOutcome =
+    | { error: string }
+    | {
+        ok: true;
+        title: string;
+        memberId: number;
+        days: number;
+        due: string;
+        previousDue: string;
+      };
+
+  const outcome = await sql.begin(async (tx): Promise<DueOutcome> => {
+    const [loan] = await tx`
+      select
+        l.id,
+        l.member_id,
+        l.returned_on,
+        to_char(l.borrowed_on, 'YYYY-MM-DD') as borrowed_iso,
+        to_char(l.due_on, 'DD Mon YYYY') as previous_due,
+        b.title
+      from loans l
+      join books b on b.id = l.book_id
+      where l.id = ${loanId}
+      for update of l
+    `;
+    if (!loan) return { error: "Loan not found." };
+    if (loan.returned_on) {
+      return {
+        error:
+          "This loan is already closed. Issue a new loan to lend the book again.",
+      };
+    }
+
+    const [term] = await tx`
+      select
+        (${dueDate}::date - ${loan.borrowed_iso}::date)::int as days,
+        (${dueDate}::date - current_date)::int as remaining
+    `;
+    if (term.remaining < 0) {
+      return { error: "The due date cannot be in the past." };
+    }
+    if (term.days < 1) {
+      return { error: "The due date must be after the borrowing date." };
+    }
+    if (term.days > 365) {
+      return { error: "Loan terms cannot exceed 365 days." };
+    }
+
+    // capture fines for days already overdue before the due date moves
+    await tx`select accrue_fines()`;
+
+    const [updated] = await tx`
+      update loans
+      set due_on = ${dueDate}::date, duration_days = ${term.days}
+      where id = ${loanId}
+      returning to_char(due_on, 'DD Mon YYYY') as due
+    `;
+
+    return {
+      ok: true as const,
+      title: loan.title,
+      memberId: loan.member_id,
+      days: term.days,
+      due: updated.due,
+      previousDue: loan.previous_due,
+    };
+  });
+
+  if ("error" in outcome) return { message: outcome.error };
+
+  await logAudit({
+    action: "loan.due_date_changed",
+    entityType: "loan",
+    entityId: loanId,
+    summary: `${access.user.name} changed the due date for "${outcome.title}" from ${outcome.previousDue} to ${outcome.due}`,
+    actor: access.user,
+    metadata: {
+      previousDue: outcome.previousDue,
+      due: outcome.due,
+      days: outcome.days,
+      memberId: outcome.memberId,
+    },
+  });
+
+  revalidatePath("/");
+  revalidatePath("/dashboard");
+  revalidatePath("/members");
+  revalidatePath(`/members/${outcome.memberId}`);
+  revalidatePath("/circulation");
+  revalidatePath("/fines");
+  return {
+    message: `"${outcome.title}" is now due ${outcome.due}.`,
     ok: true,
   };
 }

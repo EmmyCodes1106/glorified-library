@@ -35,7 +35,6 @@ export type LibraryIdentity = {
   contactPhone: string | null;
   contactAddress: string | null;
   website: string | null;
-  logoDataUrl: string | null;
   currencySymbol: string;
   noticeText: string | null;
   openingHours: OpeningHours;
@@ -58,7 +57,6 @@ type SettingsRow = {
   contact_phone: string | null;
   contact_address: string | null;
   website: string | null;
-  logo_data_url: string | null;
   currency_symbol: string;
   notice_text: string | null;
   opening_hours: unknown;
@@ -70,7 +68,6 @@ const FALLBACK_IDENTITY: LibraryIdentity = {
   contactPhone: null,
   contactAddress: null,
   website: null,
-  logoDataUrl: null,
   currencySymbol: "",
   noticeText: null,
   openingHours: normalizeOpeningHours({}),
@@ -138,7 +135,6 @@ export const getLibraryIdentity = cache(
         contact_phone,
         contact_address,
         website,
-        logo_data_url,
         currency_symbol,
         notice_text,
         opening_hours
@@ -153,7 +149,6 @@ export const getLibraryIdentity = cache(
       contactPhone: row.contact_phone,
       contactAddress: row.contact_address,
       website: row.website,
-      logoDataUrl: row.logo_data_url,
       currencySymbol: row.currency_symbol,
       noticeText: row.notice_text,
       openingHours: normalizeOpeningHours(row.opening_hours),

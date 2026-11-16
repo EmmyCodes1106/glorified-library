@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { buildReport, isReportId } from "@/lib/reports";
 import { renderReportExcel } from "@/lib/report-excel";
 import { renderReportPdf } from "@/lib/report-pdf";
@@ -40,9 +42,12 @@ export async function GET(request: Request) {
       getLibraryIdentity(),
     ]);
 
+    const logo = format === "pdf"
+      ? await readFile(path.join(process.cwd(), "public", "library-logo-light.png"))
+      : null;
     const branding = {
       name: identity.name,
-      logoDataUrl: identity.logoDataUrl,
+      logoDataUrl: logo ? `data:image/png;base64,${logo.toString("base64")}` : null,
     };
 
     const bytes =

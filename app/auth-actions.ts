@@ -29,13 +29,17 @@ import {
   verifyAgainstDummy,
   verifyPassword,
 } from "@/lib/auth/password";
-import { sendEmail } from "@/lib/email";
+import { appBaseUrl } from "@/lib/app-url";
+import { sendLoggedEmail } from "@/lib/email";
+import { issueEmailVerification } from "@/lib/email-verification";
 import { getLibraryIdentity } from "@/lib/settings";
 
 export type AuthFormState = {
   message: string;
   ok?: boolean;
   resetLink?: string;
+  verifyEmail?: boolean;
+  verificationEmail?: string;
 };
 
 const GENERIC_LOGIN_ERROR = "Email or password is incorrect.";
@@ -48,12 +52,6 @@ function normaliseEmail(value: FormDataEntryValue | null) {
 
 function validEmail(email: string) {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function appBaseUrl() {
-  const configured = process.env.APP_URL?.trim();
-  if (configured) return configured.replace(/\/+$/, "");
-  return "http://localhost:3000";
 }
 
 function newOpaqueToken() {
@@ -83,6 +81,8 @@ type LoginRow = {
   password_hash: string;
   role: string;
   is_active: boolean;
+  approved_at: Date | null;
+  email_verified_at: Date | null;
   failed_login_attempts: number;
   locked_until: Date | null;
 };
@@ -104,8 +104,8 @@ export async function loginAction(
 
   const [user] = await sql<LoginRow[]>`
     select
-      id, name, email, password_hash, role, is_active,
-      failed_login_attempts, locked_until
+      id, name, email, password_hash, role, is_active, approved_at,
+      email_verified_at, failed_login_attempts, locked_until
     from users
     where lower(email) = lower(${email})
     limit 1
@@ -145,18 +145,32 @@ export async function loginAction(
   }
 
   if (!user.is_active) {
-    await verifyAgainstDummy(password);
+    const validInactive = await verifyPassword(password, user.password_hash);
+    if (!validInactive) return { message: GENERIC_LOGIN_ERROR };
+
+    const pending = user.approved_at === null;
+    const unverified = user.email_verified_at === null;
     await logAudit({
       action: "auth.login_failed",
-      summary: `Deactivated account tried to sign in: ${user.email}`,
+      summary: pending
+        ? `Unapproved account tried to sign in: ${user.email}`
+        : `Deactivated account tried to sign in: ${user.email}`,
       entityType: "user",
       entityId: user.id,
       actor: { id: user.id, name: user.name, email: user.email, role: user.role },
       context,
-      metadata: { reason: "inactive" },
+      metadata: {
+        reason: pending ? "pending_approval" : "inactive",
+        emailVerified: !unverified,
+      },
     });
     return {
-      message: "This account is deactivated. Contact a super administrator.",
+      message: pending
+        ? unverified
+          ? "Confirm your email address, then a super administrator will review your account. Enter or request a new verification code."
+          : "This account is awaiting approval by a super administrator."
+        : "This account is deactivated. Contact a super administrator.",
+      verifyEmail: unverified,
     };
   }
 
@@ -191,6 +205,23 @@ export async function loginAction(
       message: lockedUntil
         ? `Too many failed attempts. This account is locked for ${LOCK_MINUTES} minutes.`
         : GENERIC_LOGIN_ERROR,
+    };
+  }
+
+  if (!user.email_verified_at) {
+    await logAudit({
+      action: "auth.login_blocked_unverified",
+      summary: `Sign-in blocked until ${user.email} confirms their email address`,
+      entityType: "user",
+      entityId: user.id,
+      actor: { id: user.id, name: user.name, email: user.email, role: user.role },
+      context,
+      metadata: { reason: "email_unconfirmed" },
+    });
+    return {
+      message:
+        "Confirm your email address before signing in. Enter or request a new verification code below.",
+      verifyEmail: true,
     };
   }
 
@@ -247,6 +278,95 @@ export async function logoutAction(): Promise<void> {
   redirect("/login");
 }
 
+const REGISTRATION_LIMIT = 5;
+const REGISTRATION_WINDOW_MINUTES = 15;
+
+export async function registerAction(
+  _prev: AuthFormState,
+  formData: FormData
+): Promise<AuthFormState> {
+  const name = String(formData.get("name") ?? "").trim();
+  const email = normaliseEmail(formData.get("email"));
+  const password = String(formData.get("password") ?? "");
+  const confirm = String(formData.get("confirmPassword") ?? "");
+
+  if (!name) return { message: "Enter your full name." };
+  if (name.length > 160) return { message: "Names must be 160 characters or fewer." };
+  if (!validEmail(email)) return { message: "Enter a valid email address." };
+
+  const policyError = validatePassword(password);
+  if (policyError) return { message: policyError };
+  if (password !== confirm) {
+    return { message: "The two passwords do not match." };
+  }
+
+  const context = await requestContext();
+
+  if (context.ipAddress) {
+    const [recent] = await sql<{ count: number }[]>`
+      select count(*)::int as count
+      from audit_logs
+      where action = 'user.registration_requested'
+        and ip_address = ${context.ipAddress}
+        and created_at > now() - ${`${REGISTRATION_WINDOW_MINUTES} minutes`}::interval
+    `;
+    if (recent.count >= REGISTRATION_LIMIT) {
+      return {
+        message:
+          "Too many account requests from this network. Try again in a few minutes.",
+      };
+    }
+  }
+
+  // The same reply is returned for an existing email so the form cannot be
+  // used to discover which addresses already have staff accounts.
+  const submitted: AuthFormState = {
+    ok: true,
+    verificationEmail: email,
+    message:
+      "Your request was submitted. Enter the six-digit code from your email. After verification, a super administrator will review your account.",
+  };
+
+  const passwordHash = await hashPassword(password);
+
+  let created: { id: number; name: string; email: string };
+  try {
+    [created] = await sql<{ id: number; name: string; email: string }[]>`
+      insert into users (
+        name, email, password_hash, role, permissions, is_active, approved_at
+      )
+      values (
+        ${name}, ${email}, ${passwordHash}, 'librarian', ${[]}, false, null
+      )
+      returning id, name, email
+    `;
+  } catch (error) {
+    if ((error as { code?: string }).code === "23505") return submitted;
+    throw error;
+  }
+
+  const delivery = await issueEmailVerification(
+    {
+      type: "staff",
+      id: created.id,
+      name: created.name,
+      email: created.email,
+    }
+  );
+
+  await logAudit({
+    action: "user.registration_requested",
+    summary: `${created.name} requested a staff account`,
+    entityType: "user",
+    entityId: created.id,
+    actor: { name: created.name, email: created.email, role: null },
+    context,
+    metadata: { requestedRole: "librarian", delivery: delivery.status },
+  });
+
+  return submitted;
+}
+
 export async function requestPasswordReset(
   _prev: AuthFormState,
   formData: FormData
@@ -284,9 +404,10 @@ export async function requestPasswordReset(
 
     const link = `${appBaseUrl()}/reset-password?token=${token}`;
     const identity = await getLibraryIdentity();
-    const delivery = await sendEmail({
+    const delivery = await sendLoggedEmail({
       to: user.email,
       subject: `Reset your ${identity.name} password`,
+      purpose: "staff_password_reset",
       text: [
         `Hello ${user.name},`,
         "",
@@ -454,10 +575,12 @@ export async function setupAction(
   let created: { id: number; name: string; email: string; role: string };
   try {
     [created] = await sql<{ id: number; name: string; email: string; role: string }[]>`
-      insert into users (name, email, password_hash, role, permissions)
+      insert into users (
+        name, email, password_hash, role, permissions, approved_at
+      )
       values (
         ${name}, ${email}, ${passwordHash}, 'super_admin',
-        ${permissions}
+        ${permissions}, now()
       )
       returning id, name, email, role
     `;
@@ -698,10 +821,12 @@ export async function createUserAction(
   let created: { id: number; name: string; email: string };
   try {
     [created] = await sql<{ id: number; name: string; email: string }[]>`
-      insert into users (name, email, password_hash, role, permissions)
+      insert into users (
+        name, email, password_hash, role, permissions, approved_at
+      )
       values (
         ${name}, ${email}, ${passwordHash}, ${role},
-        ${permissions}
+        ${permissions}, now()
       )
       returning id, name, email
     `;
@@ -730,6 +855,7 @@ type ManagedUser = {
   email: string;
   role: string;
   is_active: boolean;
+  approved_at: Date | null;
 };
 
 async function activeSuperAdmins(exceptId?: number) {
@@ -755,7 +881,8 @@ export async function updateUserAction(
   const id = Number(formData.get("id"));
   const name = String(formData.get("name") ?? "").trim();
   const roleText = String(formData.get("role") ?? "");
-  const isActive = formData.get("isActive") === "on";
+  const approveRequested = formData.get("approve") === "1";
+  const isActive = approveRequested || formData.get("isActive") === "on";
 
   if (!Number.isInteger(id) || id < 1) return { message: "Account not found." };
   if (!name) return { message: "Enter the staff member's full name." };
@@ -763,12 +890,14 @@ export async function updateUserAction(
   if (!isRole(roleText)) return { message: "Choose a valid role." };
 
   const [target] = await sql<ManagedUser[]>`
-    select id, name, email, role, is_active
+    select id, name, email, role, is_active, approved_at
     from users where id = ${id}
   `;
   if (!target) return { message: "Account not found." };
 
   const role: Role = roleText;
+  const approving =
+    isActive && !target.is_active && target.approved_at === null;
   const removingSuperAdmin =
     target.role === "super_admin" &&
     target.is_active &&
@@ -793,6 +922,10 @@ export async function updateUserAction(
       name = ${name},
       role = ${role},
       is_active = ${isActive},
+      approved_at = case
+        when ${isActive} then coalesce(approved_at, now())
+        else approved_at
+      end,
       permissions = ${permissions},
       updated_at = now()
     where id = ${id}
@@ -803,8 +936,10 @@ export async function updateUserAction(
   }
 
   await logAudit({
-    action: "user.updated",
-    summary: `${current.name} updated account ${target.email}`,
+    action: approving ? "user.approved" : "user.updated",
+    summary: approving
+      ? `${current.name} approved staff account ${target.email}`
+      : `${current.name} updated account ${target.email}`,
     entityType: "user",
     entityId: id,
     metadata: {
@@ -816,7 +951,12 @@ export async function updateUserAction(
   });
 
   revalidatePath("/users");
-  return { message: `Account for ${name} saved.`, ok: true };
+  return {
+    message: approving
+      ? `Account approved for ${name}.`
+      : `Account for ${name} saved.`,
+    ok: true,
+  };
 }
 
 export async function issueUserResetLinkAction(
@@ -832,7 +972,7 @@ export async function issueUserResetLinkAction(
   if (!Number.isInteger(id) || id < 1) return { message: "Account not found." };
 
   const [target] = await sql<ManagedUser[]>`
-    select id, name, email, role, is_active
+    select id, name, email, role, is_active, approved_at
     from users where id = ${id}
   `;
   if (!target) return { message: "Account not found." };
@@ -855,9 +995,10 @@ export async function issueUserResetLinkAction(
 
   const resetLink = `${appBaseUrl()}/reset-password?token=${token}`;
   const identity = await getLibraryIdentity();
-  const delivery = await sendEmail({
+  const delivery = await sendLoggedEmail({
     to: target.email,
     subject: `Your ${identity.name} password reset link`,
+    purpose: "staff_reset_link_issued",
     text: [
       `Hello ${target.name},`,
       "",
@@ -883,5 +1024,58 @@ export async function issueUserResetLinkAction(
         : `Reset link created. Email delivery was not available, so share this link securely. It expires in one hour.`,
     ok: true,
     resetLink,
+  };
+}
+
+export async function resendUserVerificationAction(
+  _prev: AuthFormState,
+  formData: FormData
+): Promise<AuthFormState> {
+  const current = await getCurrentUser();
+  if (!current || current.role !== "super_admin") {
+    return {
+      message: "Only a super administrator can resend confirmation emails.",
+    };
+  }
+
+  const id = Number(formData.get("id"));
+  if (!Number.isInteger(id) || id < 1) return { message: "Account not found." };
+
+  const [target] = await sql<
+    {
+      id: number;
+      name: string;
+      email: string;
+      email_verified_at: Date | null;
+    }[]
+  >`
+    select id, name, email, email_verified_at
+    from users
+    where id = ${id}
+  `;
+  if (!target) return { message: "Account not found." };
+  if (target.email_verified_at) {
+    return { message: "This email address is already confirmed.", ok: true };
+  }
+
+  const delivery = await issueEmailVerification(
+    { type: "staff", id: target.id, name: target.name, email: target.email }
+  );
+
+  await logAudit({
+    action: "user.verification_resent",
+    summary: `${current.name} re-sent the confirmation email to ${target.email}`,
+    entityType: "user",
+    entityId: target.id,
+    metadata: { delivery: delivery.status },
+  });
+
+  revalidatePath("/users");
+  return {
+    message:
+      delivery.status === "sent"
+        ? `Verification code sent to ${target.email}. It expires in 10 minutes.`
+        : `No verification code was sent. ${delivery.reason}`,
+    ok: delivery.status === "sent",
   };
 }

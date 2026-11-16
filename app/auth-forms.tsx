@@ -2,8 +2,11 @@
 
 import { useActionState, type InputHTMLAttributes } from "react";
 import Link from "next/link";
+import { ArrowRight, LogIn } from "lucide-react";
+import { EmailVerificationForm } from "@/components/verify-email-forms";
 import {
   loginAction,
+  registerAction,
   requestPasswordReset,
   resetPasswordAction,
   setupAction,
@@ -17,10 +20,10 @@ function Message({ state }: { state: AuthFormState }) {
   return (
     <p
       role={state.ok ? "status" : "alert"}
-      className={`rounded border p-3 text-sm ${
+      className={`rounded-lg border p-3 text-sm ${
         state.ok
-          ? "border-green-300 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950/40 dark:text-green-300"
-          : "border-red-300 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+          ? "border-success/30 bg-success-soft text-success"
+          : "border-danger/30 bg-danger-soft text-danger"
       }`}
     >
       {state.message}
@@ -38,22 +41,29 @@ function Field({
 } & InputHTMLAttributes<HTMLInputElement>) {
   return (
     <label className="grid gap-1 text-sm">
-      <span className="text-gray-500">{label}</span>
-      <input
-        {...props}
-        className="w-full min-w-0 rounded border bg-transparent p-2 text-sm"
-      />
-      {hint && <span className="text-xs text-gray-500">{hint}</span>}
+      <span className="label">{label}</span>
+      <input {...props} className="field w-full" />
+      {hint && <span className="hint">{hint}</span>}
     </label>
   );
 }
 
-function Submit({ pending, label }: { pending: boolean; label: string }) {
+function Submit({
+  pending,
+  label,
+  icon = "arrow",
+}: {
+  pending: boolean;
+  label: string;
+  icon?: "arrow" | "login";
+}) {
   return (
-    <button
-      disabled={pending}
-      className="rounded bg-white px-4 py-2 font-medium text-black disabled:opacity-50"
-    >
+    <button disabled={pending} className="btn btn-primary w-full">
+      {icon === "login" ? (
+        <LogIn size={15} aria-hidden="true" />
+      ) : (
+        <ArrowRight size={15} aria-hidden="true" />
+      )}
       {pending ? "Please wait..." : label}
     </button>
   );
@@ -68,7 +78,7 @@ export function LoginForm({ reset, next }: { reset: boolean; next?: string }) {
       {reset && (
         <p
           role="status"
-          className="rounded border border-green-300 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950/40 dark:text-green-300"
+          className="rounded-lg border border-success/30 bg-success-soft p-3 text-sm text-success"
         >
           Password updated. Sign in with your new password.
         </p>
@@ -91,11 +101,21 @@ export function LoginForm({ reset, next }: { reset: boolean; next?: string }) {
         maxLength={200}
       />
       <Message state={state} />
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Submit pending={pending} label="Sign in" />
+      <Submit pending={pending} label="Sign in" icon="login" />
+      {state.verifyEmail && (
+        <p className="text-center text-sm text-muted">
+          <Link
+            href="/verify-email?type=staff"
+            className="font-medium text-brand underline-offset-4 hover:text-brand-hover hover:underline"
+          >
+            Enter or resend verification code
+          </Link>
+        </p>
+      )}
+      <div className="text-center">
         <Link
           href="/forgot-password"
-          className="text-sm underline underline-offset-4"
+          className="text-sm text-muted underline-offset-4 hover:text-foreground hover:underline"
         >
           Forgot password?
         </Link>
@@ -104,16 +124,85 @@ export function LoginForm({ reset, next }: { reset: boolean; next?: string }) {
   );
 }
 
-export function SetupForm({ tokenConfigured }: { tokenConfigured: boolean }) {
-  const [state, action, pending] = useActionState(setupAction, initial);
+export function RegisterForm() {
+  const [state, action, pending] = useActionState(registerAction, initial);
+
+  if (state.ok && state.verificationEmail) {
+    return (
+      <div className="grid gap-4">
+        <Message state={state} />
+        <EmailVerificationForm
+          initialEmail={state.verificationEmail}
+          accountType="staff"
+        />
+      </div>
+    );
+  }
 
   return (
     <form action={action} className="grid gap-4">
-      <p className="text-sm text-gray-500">
+      <Field
+        label="Full name"
+        name="name"
+        required
+        autoComplete="name"
+        maxLength={160}
+        autoFocus
+      />
+      <Field
+        label="Email address"
+        name="email"
+        type="email"
+        required
+        autoComplete="username"
+        maxLength={254}
+      />
+      <Field
+        label="Password"
+        name="password"
+        type="password"
+        required
+        autoComplete="new-password"
+        maxLength={200}
+        hint="At least 12 characters, including a letter and a number."
+      />
+      <Field
+        label="Confirm password"
+        name="confirmPassword"
+        type="password"
+        required
+        autoComplete="new-password"
+        maxLength={200}
+      />
+      <Message state={state} />
+      <Submit pending={pending} label="Request staff access" />
+      <div className="text-center">
+        <Link
+          href="/login"
+          className="text-sm text-muted underline-offset-4 hover:text-foreground hover:underline"
+        >
+          Already have an account? Sign in
+        </Link>
+      </div>
+    </form>
+  );
+}
+
+export function SetupForm({ tokenConfigured }: { tokenConfigured: boolean }) {  const [state, action, pending] = useActionState(setupAction, initial);
+
+  return (
+    <form action={action} className="grid gap-4">
+      <p className="text-sm text-muted">
         Create the first Super Administrator account. This form is only
         available while the library has no staff accounts.
       </p>
-      <Field label="Full name" name="name" required autoComplete="name" maxLength={160} />
+      <Field
+        label="Full name"
+        name="name"
+        required
+        autoComplete="name"
+        maxLength={160}
+      />
       <Field
         label="Email address"
         name="email"
@@ -148,7 +237,7 @@ export function SetupForm({ tokenConfigured }: { tokenConfigured: boolean }) {
         hint="The value of AUTH_SETUP_TOKEN set on the server."
       />
       {!tokenConfigured && (
-        <p className="rounded border border-orange-300 bg-orange-50 p-3 text-sm text-orange-800 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-300">
+        <p className="rounded-lg border border-warning/25 bg-warning-soft p-3 text-sm text-warning">
           AUTH_SETUP_TOKEN is not configured on the server. Add it to the
           environment, restart the app, then reload this page.
         </p>
@@ -177,9 +266,12 @@ export function ForgotForm() {
         autoFocus
       />
       <Message state={state} />
-      <div className="flex flex-wrap items-center gap-4">
-        <Submit pending={pending} label="Send reset link" />
-        <Link href="/login" className="text-sm underline underline-offset-4">
+      <Submit pending={pending} label="Send reset link" />
+      <div className="text-center">
+        <Link
+          href="/login"
+          className="text-sm text-muted underline-offset-4 hover:text-foreground hover:underline"
+        >
           Back to sign in
         </Link>
       </div>
@@ -215,9 +307,12 @@ export function ResetForm({ token }: { token: string }) {
         maxLength={200}
       />
       <Message state={state} />
-      <div className="flex flex-wrap items-center gap-4">
-        <Submit pending={pending} label="Set new password" />
-        <Link href="/login" className="text-sm underline underline-offset-4">
+      <Submit pending={pending} label="Set new password" />
+      <div className="text-center">
+        <Link
+          href="/login"
+          className="text-sm text-muted underline-offset-4 hover:text-foreground hover:underline"
+        >
           Back to sign in
         </Link>
       </div>

@@ -41,16 +41,37 @@ export default async function LoginPage({
       title="Sign in"
       subtitle="Staff access to the library catalogue, members and circulation."
     >
-      <LoginForm reset={reset} next={next} />
-      {counts.count === 0 && (
-        <p className="mt-4 border-t pt-4 text-sm text-gray-500">
+<LoginForm reset={reset} next={next} />
+<p className="mt-4 text-sm text-muted">
+  <Link
+    href="/login/code"
+    className="font-medium text-brand underline-offset-4 hover:underline"
+  >
+    Email me a sign-in code instead
+  </Link>
+</p>
+{counts.count > 0 && (
+        <p className="mt-4 border-t border-line pt-4 text-sm text-muted">
           First time here?{" "}
-          <Link href="/setup" className="underline underline-offset-4">
+          <Link
+            href="/setup"
+            className="font-medium text-brand underline-offset-4 hover:underline"
+          >
             Create the first super administrator
           </Link>
           .
         </p>
       )}
+      <p className="mt-4 border-t border-line pt-4 text-sm text-muted">
+        Library member?{" "}
+        <Link
+          href="/member/login"
+          className="font-medium text-brand underline-offset-4 hover:underline"
+        >
+          Sign in to the member portal
+        </Link>
+        .
+      </p>
     </AuthShell>
   );
 }
