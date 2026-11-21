@@ -8,6 +8,7 @@ import { requirePagePermission } from "@/lib/auth/dal";
 import { hasPermission } from "@/lib/auth/permissions";
 import AddBookForm from "@/components/add-book-form";
 import BookActions from "@/components/book-actions";
+import BookEbookPanel from "@/components/book-ebook-panel";
 import { EmptyState, PageIntro } from "@/components/ui";
 
 export const metadata = {
@@ -36,6 +37,10 @@ type BookRow = {
   rack: string | null;
   genres: string[];
   open_loans: number;
+  ebook_name: string | null;
+  ebook_size: number | null;
+  ebook_source: string | null;
+  ebook_ref: string | null;
 };
 
 type LoanRow = {
@@ -191,6 +196,23 @@ function BookCard({
           due: loan.due,
         }))}
       />
+
+      {canManage && (
+        <BookEbookPanel
+          bookId={book.id}
+          title={book.title}
+          ebook={
+            book.ebook_name
+              ? {
+                  originalName: book.ebook_name,
+                  byteSize: book.ebook_size ?? 0,
+                  source: book.ebook_source,
+                  sourceRef: book.ebook_ref,
+                }
+              : null
+          }
+        />
+      )}
     </li>
   );
 }
@@ -244,7 +266,11 @@ async function Inventory({
           join genres g on g.id = bg.genre_id
           where bg.book_id = b.id
         ), '{}') as genres,
-        coalesce(l.open_loans, 0) as open_loans
+        coalesce(l.open_loans, 0) as open_loans,
+        f.original_name as ebook_name,
+        f.byte_size::int as ebook_size,
+        f.source as ebook_source,
+        f.source_ref as ebook_ref
       from books b
       join authors a on a.id = b.author_id
       left join categories c on c.id = b.category_id
@@ -254,6 +280,7 @@ async function Inventory({
         where returned_on is null
         group by book_id
       ) l on l.book_id = b.id
+      left join book_files f on f.book_id = b.id
       where (
         ${q} = ''
         or b.title ilike ${like}

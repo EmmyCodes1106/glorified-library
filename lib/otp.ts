@@ -4,17 +4,23 @@ import sql from "@/db";
 import { sendLoggedEmail } from "@/lib/email";
 
 export type Purpose = "login" | "reset";
+export type SendCodeResult = "sent" | "cooldown" | "failed";
 const TTL_MIN = 10, MAX_ATTEMPTS = 5, COOLDOWN_SEC = 60;
 
 const h = (c: string) =>
   createHash("sha256").update(c + process.env.OTP_SECRET!).digest("hex");
 
-export async function sendCode(email: string, purpose: Purpose) {
+export async function sendCode(
+  email: string,
+  purpose: Purpose
+): Promise<SendCodeResult> {
   const [last] = await sql`
     select created_at from auth_codes
     where email = ${email} and purpose = ${purpose}
     order by created_at desc limit 1`;
-  if (last && Date.now() - new Date(last.created_at).getTime() < COOLDOWN_SEC * 1000) return;
+  if (last && Date.now() - new Date(last.created_at).getTime() < COOLDOWN_SEC * 1000) {
+    return "cooldown";
+  }
 
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
   const [row] = await sql`
@@ -32,7 +38,9 @@ export async function sendCode(email: string, purpose: Purpose) {
   // If delivery failed, drop the code so the 60-second cooldown doesn't block a retry
   if (result.status !== "sent") {
     await sql`delete from auth_codes where id = ${row.id}`;
+    return "failed";
   }
+  return "sent";
 }
 
 export async function verifyCode(email: string, purpose: Purpose, code: string) {

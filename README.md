@@ -4,22 +4,32 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 Notification events (borrow/return confirmations, due reminders, overdue notices,
 suspension notices and the daily administrator alert) are stored in the
-`notifications` table and shown under `/notifications`. Email is delivered
-through [Brevo](https://brevo.com) or [Resend](https://resend.com); no
-simulated delivery is used. Brevo is used when `BREVO_API_KEY` is set, otherwise
-Resend is used. If neither is configured, each notification is recorded with a
-`skipped` email status and the reason is kept in the history.
+`notifications` table and shown under `/notifications`. Email is delivered over
+SMTP from a Gmail account using an App Password; no simulated delivery is used.
+If SMTP is not configured, each notification is recorded with a `skipped` email
+status and the reason is kept in the history.
 
 Required environment variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `BREVO_API_KEY` | Brevo API key. Preferred sender; its free plan can verify a single sender address. |
-| `RESEND_API_KEY` | Resend API key, used when `BREVO_API_KEY` is not set. |
-| `EMAIL_FROM` | Verified sender, e.g. `Glorified Library <notifications@example.com>`. |
+| `SMTP_HOST` | SMTP server, defaults to `smtp.gmail.com`. |
+| `SMTP_PORT` | SMTP port, defaults to `465` (TLS). |
+| `SMTP_USER` | Gmail address used to send mail. |
+| `SMTP_PASS` | Google App Password for that account (requires 2-Step Verification). |
+| `EMAIL_FROM` | Sender shown to recipients, must be `SMTP_USER`, e.g. `Glorified Library <you@gmail.com>`. |
 | `APP_URL` | Public base URL used in staff password-reset links. |
 | `NOTIFICATION_CRON_SECRET` | Bearer token for the scheduled endpoint. |
 | `CRON_SECRET` | Alternative token; Vercel Cron sends it automatically. |
+
+Create the App Password at <https://myaccount.google.com/apppasswords>; the
+option only appears after 2-Step Verification is enabled. Gmail rejects the
+normal account password with `535-5.7.8 Username and Password not accepted`.
+
+If delivery fails with a certificate error (`self-signed certificate in
+certificate chain`), an antivirus mail scanner is intercepting SMTP. Turn off
+its Mail Shield for this machine or add an exclusion for the Node.js process;
+the app deliberately does not disable TLS verification.
 
 Apply the migration with `psql "$DATABASE_URL" -f db/notifications.sql`.
 
@@ -48,6 +58,7 @@ Apply the migration before first use:
 psql "$DATABASE_URL" -f db/auth.sql
 psql "$DATABASE_URL" -f db/email-verification.sql
 psql "$DATABASE_URL" -f db/email-verification-otp.sql
+psql "$DATABASE_URL" -f db/auth-codes.sql
 psql "$DATABASE_URL" -f db/member-password-requests.sql
 ```
 
@@ -95,21 +106,22 @@ psql "$DATABASE_URL" -f db/email-verification-otp.sql
 Do not rerun `db/email-verification.sql` on an existing installation: its
 initial backfill marks existing accounts verified.
 
-Every auth email (verification codes and staff password reset) is sent through
-Brevo or Resend and recorded in `email_log`. Super Administrators can review Sent / Skipped /
+Every auth email (verification codes and password reset codes) is sent through
+Gmail SMTP and recorded in `email_log`. Super Administrators can review Sent / Skipped /
 Failed attempts, including the provider response, under `/audit/email`. When
 email is unconfigured the staff reset flow still works: Super Administrators can
 issue a one-time reset link from `/users` and share it securely.
 
 ### Member portal passwords
 
-Members do not reset their own portal password. `/member/forgot-password` files
-a request instead of sending email; open requests appear on the Super
-Administrator dashboard and as a badge on the member's profile. A Super
-Administrator sets a temporary password from `/members/[id]`, which revokes every
-open portal session and resolves the request. The member chooses their own
-password from the portal profile after signing in. Requests live in
-`member_password_requests` with one open request per member.
+Members reset their own portal password from `/member/forgot-password`. The app
+emails a six-digit code (10-minute expiry, 60-second resend cooldown, five
+attempts) through Gmail SMTP; entering it with a new password updates
+`members.password_hash`, clears failed-login counters, revokes every open portal
+session and records `member.portal_password_reset` in the audit log. No staff
+approval is involved. Super Administrators can still set a temporary password
+from `/members/[id]` as a fallback when a member cannot receive email; that path
+also resolves any older `member_password_requests` rows.
 
 ### Book metadata lookup
 
@@ -129,6 +141,87 @@ store:
 
 ```bash
 NODE_OPTIONS=--use-system-ca npm run dev
+```
+
+### Bulk import from Open Library
+
+Super administrators can fill the catalogue from **Administration → Bulk
+import** (`/import`) instead of typing books one at a time. A run matches
+either an Open Library subject (e.g. "African literature") or a free-text
+search query, pulls up to 200 results, and adds each new book with **5
+copies** and its cover image. Books already in the catalogue are skipped by
+Open Library work key or ISBN, subject runs create/assign the matching
+category, and a run can be stopped at any time without losing what was
+already added. Each batch is recorded in the audit trail as
+`book.bulk_imported`.
+
+"All books" is not importable in one go: Open Library holds tens of millions
+of works and its search API stops deep paging at about 10,000 results per
+query. Import in slices instead. The importer is limited to `super_admin`
+accounts; other roles do not see the navigation entry and are redirected to
+`/forbidden`. The `books.open_library_key` column comes from
+`db/book-import.sql`.
+
+### Digital copies (read online)
+
+Staff with `books.manage` can attach one EPUB to any title from its card on
+the inventory page (**Digital copy → Choose EPUB**). Uploaded files are
+validated as EPUBs and stored in `storage/ebooks/`, outside the web root, so
+there is no public URL to fetch them. Replacing a file deletes the previous
+one; deleting the book deletes its file too. Uploads and removals are
+audited as `book.ebook_uploaded` and `book.ebook_removed`.
+
+Members read a digital copy from **My loans → Read online**
+(`/member/read/<bookId>`). The reader streams one chapter at a time from
+`/api/member/read/...`; both chapter and image routes re-check, on every
+request, that the signed-in member has an unreturned loan for that exact
+book and an active membership. Chapter HTML is sanitised on the server
+(scripts, styles, external links and remote images are stripped), images come
+from an index into the EPUB manifest, every page carries the member's name
+and member code, and responses are `no-store`. When the loan is returned — or
+the digital copy is removed — the next request is refused, so access ends
+without any separate revocation step.
+
+Two honest limits: this is not DRM (a determined member can still copy text
+already shown in their browser), and Open Library metadata carries no
+reading rights. Only upload EPUBs the library owns or that are public domain
+(for example Project Gutenberg or Internet Archive titles).
+
+Apply the migration first:
+
+```bash
+psql "$DATABASE_URL" -f db/ebooks.sql
+```
+
+### Public-domain copies from Project Gutenberg
+
+The second panel on **Administration → Bulk import** attaches free reading
+copies to catalogue books that have none. For each book it asks Open Library
+for the Project Gutenberg numbers recorded on that work (using the stored
+`books.open_library_key` when present, otherwise a title/author search that
+must match the title closely), then downloads the EPUB from
+`www.gutenberg.org` with `gutenberg.pglaf.org` as a fallback mirror. A download
+is only attached if it is a real EPUB, parses, and its embedded title matches
+the catalogue title; anything else is discarded rather than guessed.
+
+Books are processed in catalogue order, ten per batch, and the panel keeps
+running until the chosen number of books has been checked. `public_domain_checks`
+remembers each result, so `no-match` titles are not re-scanned and repeated runs
+move forward through the catalogue. Failures caused by an unreachable server are
+retried on the next run. Attachments store `source = 'gutenberg'`, the Gutenberg
+number, the download URL and `rights_basis = 'public_domain'` on `book_files`,
+show as "Public domain copy from Project Gutenberg" on the book card, and are
+audited as `book.public_domain_attached`. An attached copy behaves exactly like
+an upload: the member reader, loan gate and watermark are unchanged.
+
+Coverage is limited by copyright, not by the tool: only works in the public
+domain (in practice, published before 1929 in the United States) have a free
+edition. Current, in-copyright titles need a licence from a library vendor and
+cannot be fetched this way.
+
+```bash
+psql "$DATABASE_URL" -f db/ebook-sources.sql
+psql "$DATABASE_URL" -f db/public-domain-checks.sql
 ```
 
 ## System settings

@@ -1,10 +1,10 @@
 import "server-only";
 
+import { createTransport, type Transporter } from "nodemailer";
 import sql from "@/db";
 
-const RESEND_ENDPOINT = "https://api.resend.com/emails";
-const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
-const REQUEST_TIMEOUT_MS = 8000;
+const DEFAULT_HOST = "smtp.gmail.com";
+const DEFAULT_PORT = 465;
 
 export type EmailPurpose =
   | "staff_verification"
@@ -14,10 +14,8 @@ export type EmailPurpose =
   | "login_code"
   | "password_reset_code";
 
-export type EmailProvider = "Brevo" | "Resend";
-
 export type EmailProviderStatus = {
-  provider: EmailProvider;
+  provider: "Gmail SMTP";
   configured: boolean;
   missing: string[];
 };
@@ -27,31 +25,30 @@ export type EmailResult =
   | { status: "skipped"; reason: string }
   | { status: "failed"; reason: string };
 
-// Brevo is preferred because its free plan can verify a single sender address,
-// while Resend only accepts a tested domain. Resend remains a fallback.
-function configuredProvider(): EmailProvider | null {
-  if (process.env.BREVO_API_KEY?.trim()) return "Brevo";
-  if (process.env.RESEND_API_KEY?.trim()) return "Resend";
-  return null;
-}
-
 export function emailProviderStatus(): EmailProviderStatus {
-  const provider = configuredProvider();
   const missing: string[] = [];
-  if (!provider) missing.push("BREVO_API_KEY");
+  if (!process.env.SMTP_USER?.trim()) missing.push("SMTP_USER");
+  if (!process.env.SMTP_PASS?.trim()) missing.push("SMTP_PASS");
   if (!process.env.EMAIL_FROM?.trim()) missing.push("EMAIL_FROM");
-  return {
-    provider: provider ?? "Brevo",
-    configured: missing.length === 0,
-    missing,
-  };
+  return { provider: "Gmail SMTP", configured: missing.length === 0, missing };
 }
 
-function parseSender(raw: string) {
-  const match = raw.match(/^(.*?)\s*<([^>]+)>\s*$/);
-  return match
-    ? { name: match[1].trim() || undefined, email: match[2].trim() }
-    : { email: raw.trim() };
+let transport: Transporter | null = null;
+
+function getTransport() {
+  if (!transport) {
+    const port = Number(process.env.SMTP_PORT ?? DEFAULT_PORT);
+    transport = createTransport({
+      host: process.env.SMTP_HOST?.trim() || DEFAULT_HOST,
+      port: Number.isInteger(port) ? port : DEFAULT_PORT,
+      secure: port === 465,
+      auth: {
+        user: process.env.SMTP_USER!,
+        pass: process.env.SMTP_PASS!,
+      },
+    });
+  }
+  return transport;
 }
 
 function describeError(error: unknown) {
@@ -59,7 +56,26 @@ function describeError(error: unknown) {
   return message.slice(0, 300);
 }
 
-// Sends through the configured HTTP API. Without credentials this reports
+function deliveryHint(error: unknown, message: string) {
+  const code = (error as { code?: string }).code;
+  if (/certificate/i.test(message)) {
+    return " The SMTP server's certificate was not trusted. An antivirus mail scanner is likely intercepting outbound mail; add an exclusion for this app or turn off Mail Shield.";
+  }
+  if (code === "EAUTH" || /5\.7\.8/.test(message)) {
+    return " Gmail rejected the login. SMTP_PASS must be a 16-character Google App Password, not the normal account password.";
+  }
+  return "";
+}
+
+function isTransient(error: unknown) {
+  const { code, responseCode } = error as { code?: string; responseCode?: number };
+  if (responseCode && [421, 450, 451, 452, 454].includes(responseCode)) {
+    return true;
+  }
+  return ["ETIMEDOUT", "ECONNECTION", "ESOCKET", "EDNS"].includes(code ?? "");
+}
+
+// Sends through the configured SMTP account. Without credentials this reports
 // "skipped" — it never pretends an email was delivered.
 export async function sendEmail({
   to,
@@ -80,47 +96,21 @@ export async function sendEmail({
     };
   }
 
-  const from = process.env.EMAIL_FROM!;
-  const brevo = status.provider === "Brevo";
-  const endpoint = brevo ? BREVO_ENDPOINT : RESEND_ENDPOINT;
-  const body = JSON.stringify(
-    brevo
-      ? { sender: parseSender(from), to: [{ email: to }], subject, textContent: text }
-      : { from, to: [to], subject, text }
-  );
-  const headers: Record<string, string> = brevo
-    ? {
-        "api-key": process.env.BREVO_API_KEY!,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      }
-    : {
-        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      };
-
-  let lastError = `${status.provider} delivery failed.`;
+  let lastError = "Gmail SMTP delivery failed.";
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers,
-        body,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      await getTransport().sendMail({
+        from: process.env.EMAIL_FROM,
+        to,
+        subject,
+        text,
       });
-
-      if (response.ok) return { status: "sent" };
-
-      const detail = (await response.text()).trim().slice(0, 300);
-      lastError = `${status.provider} returned ${response.status}${
-        detail ? `: ${detail}` : ""
-      }`;
-
-      // retry throttling and server errors once, not rejected requests
-      if (response.status !== 429 && response.status < 500) break;
+      return { status: "sent" };
     } catch (error) {
-      lastError = `Could not reach ${status.provider}: ${describeError(error)}`;
+      const message = describeError(error);
+      lastError = `Gmail SMTP failed: ${message}${deliveryHint(error, message)}`;
+      if (!isTransient(error)) break;
     }
 
     if (attempt === 1) {

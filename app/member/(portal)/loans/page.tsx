@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import { connection } from "next/server";
 import { BookOpen } from "lucide-react";
 import { requireMember } from "@/lib/member-auth/dal";
@@ -90,11 +91,21 @@ async function OpenLoansView() {
                       : ""}
                   </p>
                 </div>
-                <MemberLoanActions
-                  loanId={loan.id}
-                  overdue={loan.overdue}
-                  disabled={member.status !== "active"}
-                />
+                <div className="flex flex-wrap items-center gap-2">
+                  {loan.has_ebook && member.status === "active" && (
+                    <Link
+                      href={`/member/read/${loan.book_id}`}
+                      className="btn btn-sm btn-primary"
+                    >
+                      Read online
+                    </Link>
+                  )}
+                  <MemberLoanActions
+                    loanId={loan.id}
+                    overdue={loan.overdue}
+                    disabled={member.status !== "active"}
+                  />
+                </div>
               </li>
             ))}
           </ul>

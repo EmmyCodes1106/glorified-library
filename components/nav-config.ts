@@ -10,6 +10,7 @@ export type NavIcon =
   | "reports"
   | "notifications"
   | "audit"
+  | "import"
   | "staff"
   | "settings"
   | "account";
@@ -20,6 +21,7 @@ export type NavItem = {
   label: string;
   icon: NavIcon;
   permission?: Permission;
+  superAdminOnly?: boolean;
 };
 
 export type NavGroup = {
@@ -113,6 +115,14 @@ export const NAV_GROUPS: NavGroup[] = [
         permission: "audit.read",
       },
       {
+        key: "import",
+        href: "/import",
+        label: "Bulk import",
+        icon: "import",
+        permission: "books.manage",
+        superAdminOnly: true,
+      },
+      {
         key: "users",
         href: "/users",
         label: "Staff",
@@ -167,6 +177,7 @@ export function breadcrumbFor(pathname: string): string[] {
   if (pathname === "/reports") return ["Insights", "Reports"];
   if (pathname === "/notifications") return ["Administration", "Notifications"];
   if (pathname === "/audit") return ["Administration", "Activity log"];
+  if (pathname === "/import") return ["Administration", "Bulk import"];
   if (pathname === "/users") return ["Administration", "Staff"];
   if (pathname === "/settings") return ["Administration", "Settings"];
   if (pathname === "/account") return ["Account", title];

@@ -5,7 +5,7 @@ import AuthShell from "@/app/auth-shell";
 import { MemberForgotForm } from "@/components/member-auth-forms";
 
 export const metadata = {
-  title: { absolute: "Request a password change" },
+  title: { absolute: "Reset your password" },
 };
 
 // the page reads the member session cookie before rendering
@@ -18,8 +18,8 @@ export default async function MemberForgotPasswordPage() {
 
   return (
     <AuthShell
-      title="Request a password change"
-      subtitle="Send a request to library staff. They will set a temporary password for you."
+      title="Reset your password"
+      subtitle="We will email a six-digit code to the address on your member account. Enter it with a new password — no staff approval needed."
       homeHref="/member/login"
       homeLabel="Member portal"
     >

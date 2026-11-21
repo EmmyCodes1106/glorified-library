@@ -21,6 +21,8 @@ export type PortalMember = {
 
 export type PortalLoan = {
   id: number;
+  book_id: number;
+  has_ebook: boolean;
   book_code: string;
   title: string;
   author: string;
@@ -67,6 +69,10 @@ export async function getOpenLoans(memberId: number): Promise<PortalLoan[]> {
   return sql<PortalLoan[]>`
     select
       l.id,
+      b.id as book_id,
+      exists (
+        select 1 from book_files f where f.book_id = b.id
+      ) as has_ebook,
       b.book_code,
       b.title,
       a.name as author,
@@ -93,6 +99,8 @@ export async function getLoanHistory(
   return sql<PortalLoan[]>`
     select
       l.id,
+      b.id as book_id,
+      false as has_ebook,
       b.book_code,
       b.title,
       a.name as author,
@@ -287,4 +295,98 @@ export async function getMemberFineLedger(
     order by fp.recorded_on desc, fp.id desc
     limit 100
   `;
+}
+
+export type CatalogueBook = {
+  id: number;
+  book_code: string;
+  title: string;
+  author: string;
+  year: number | null;
+  category: string | null;
+  description: string | null;
+  cover_path: string | null;
+  shelf: string | null;
+  rack: string | null;
+  total_copies: number;
+  open_loans: number;
+  on_loan_to_member: boolean;
+};
+
+export type CatalogueQuery = {
+  q: string;
+  category: string;
+  availableOnly: boolean;
+};
+
+export async function searchCatalogue(
+  memberId: number,
+  query: CatalogueQuery
+): Promise<CatalogueBook[]> {
+  const like = `%${query.q}%`;
+
+  return sql<CatalogueBook[]>`
+    select
+      b.id,
+      b.book_code,
+      b.title,
+      a.name as author,
+      b.year,
+      c.name as category,
+      b.description,
+      b.cover_path,
+      b.shelf,
+      b.rack,
+      b.total_copies,
+      coalesce(l.open_loans, 0) as open_loans,
+      exists (
+        select 1
+        from loans mine
+        where mine.book_id = b.id
+          and mine.member_id = ${memberId}
+          and mine.returned_on is null
+      ) as on_loan_to_member
+    from books b
+    join authors a on a.id = b.author_id
+    left join categories c on c.id = b.category_id
+    left join (
+      select book_id, count(*)::int as open_loans
+      from loans
+      where returned_on is null
+      group by book_id
+    ) l on l.book_id = b.id
+    where (
+      ${query.q} = ''
+      or b.title ilike ${like}
+      or a.name ilike ${like}
+      or coalesce(b.isbn, '') ilike ${like}
+      or b.book_code ilike ${like}
+    )
+    ${query.category ? sql`and c.name = ${query.category}` : sql``}
+    ${
+      query.availableOnly
+        ? sql`and coalesce(l.open_loans, 0) < b.total_copies`
+        : sql``
+    }
+    order by b.title
+    limit 200
+  `;
+}
+
+export async function getCatalogueCategories(): Promise<string[]> {
+  const rows = await sql<{ name: string }[]>`
+    select c.name
+    from categories c
+    join books b on b.category_id = c.id
+    group by c.name
+    order by c.name
+  `;
+  return rows.map((row) => row.name);
+}
+
+export async function getDefaultLoanDays(): Promise<number> {
+  const [row] = await sql<{ default_loan_days: number }[]>`
+    select default_loan_days from circulation_settings where id
+  `;
+  return row?.default_loan_days ?? 14;
 }

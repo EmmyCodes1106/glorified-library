@@ -15,7 +15,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const identity = await getLibraryIdentity();
 
   const allowedKeys = NAV_GROUPS.flatMap((group) => group.items)
-    .filter((item) => !item.permission || hasPermission(user, item.permission))
+    .filter(
+      (item) =>
+        (!item.permission || hasPermission(user, item.permission)) &&
+        (!item.superAdminOnly || user.role === "super_admin")
+    )
     .map((item) => item.key);
 
   return (

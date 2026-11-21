@@ -1,13 +1,14 @@
 "use client";
 
-import { useActionState, type InputHTMLAttributes } from "react";
+import { useActionState, useId, useState, type InputHTMLAttributes } from "react";
 import Link from "next/link";
-import { ArrowRight, LogIn } from "lucide-react";
+import { ArrowRight, KeyRound, LogIn, MailCheck } from "lucide-react";
 import { EmailVerificationForm } from "@/components/verify-email-forms";
 import {
   memberLoginAction,
   registerMemberAction,
-  requestMemberPasswordChangeAction,
+  requestMemberResetCodeAction,
+  resetMemberPasswordAction,
   type MemberFormState,
 } from "@/app/member-actions";
 
@@ -203,17 +204,127 @@ export function MemberRegisterForm() {
 }
 
 export function MemberForgotForm() {
-  const [state, action, pending] = useActionState(
-    requestMemberPasswordChangeAction,
+  const [requestState, requestAction, requesting] = useActionState(
+    requestMemberResetCodeAction,
     initial
   );
+  const [resetState, resetAction, resetting] = useActionState(
+    resetMemberPasswordAction,
+    initial
+  );
+  const [lastSubmission, setLastSubmission] = useState<
+    "request" | "resend" | "reset" | null
+  >(null);
+  const hintId = useId();
+  const pending = requesting || resetting;
+
+  if (resetState.ok) {
+    return (
+      <div className="grid gap-4">
+        <Message state={resetState} />
+        <Link href="/member/login" className="btn btn-primary w-full">
+          <LogIn size={15} aria-hidden="true" />
+          Sign in with your new password
+        </Link>
+      </div>
+    );
+  }
+
+  if (requestState.resetStep === "code" && requestState.resetEmail) {
+    const sentTo = requestState.resetEmail;
+    return (
+      <div className="grid gap-4">
+        <p className="text-sm text-muted">
+          Enter the six-digit code sent to{" "}
+          <span className="font-medium text-foreground">{sentTo}</span>, then
+          choose a new password.
+        </p>
+        {(lastSubmission === "request" || lastSubmission === "resend") && (
+          <Message state={requestState} />
+        )}
+        <form
+          action={resetAction}
+          onSubmit={() => setLastSubmission("reset")}
+          className="grid gap-4"
+        >
+          <input type="hidden" name="email" value={sentTo} />
+          <Field
+            label="Six-digit reset code"
+            name="code"
+            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            pattern="[0-9]{6}"
+            minLength={6}
+            maxLength={6}
+            required
+            autoFocus
+            aria-describedby={hintId}
+          />
+          <p id={hintId} className="hint">
+            Codes expire after 10 minutes. Check your spam folder if the email
+            hasn&apos;t arrived. Wait 60 seconds before requesting another code.
+          </p>
+          <Field
+            label="New password"
+            name="password"
+            type="password"
+            required
+            autoComplete="new-password"
+            maxLength={200}
+            hint="At least 12 characters, including a letter and a number."
+          />
+          <Field
+            label="Confirm new password"
+            name="confirmPassword"
+            type="password"
+            required
+            autoComplete="new-password"
+            maxLength={200}
+          />
+          {lastSubmission === "reset" && <Message state={resetState} />}
+          <button disabled={pending} className="btn btn-primary w-full">
+            <KeyRound size={15} aria-hidden="true" />
+            {resetting ? "Resetting..." : "Reset password"}
+          </button>
+        </form>
+        <form
+          action={requestAction}
+          onSubmit={() => setLastSubmission("resend")}
+          className="grid gap-4"
+        >
+          <input type="hidden" name="email" value={sentTo} />
+          <input type="hidden" name="step" value="code" />
+          <button
+            type="submit"
+            disabled={pending}
+            aria-describedby={hintId}
+            className="btn btn-secondary w-full"
+          >
+            <MailCheck size={15} aria-hidden="true" />
+            {requesting ? "Sending..." : "Send a new code"}
+          </button>
+        </form>
+        <a
+          href="/member/forgot-password"
+          className="text-center text-sm text-muted underline-offset-4 hover:text-foreground hover:underline"
+        >
+          Use a different email address
+        </a>
+      </div>
+    );
+  }
 
   return (
-    <form action={action} className="grid gap-4">
+    <form
+      action={requestAction}
+      onSubmit={() => setLastSubmission("request")}
+      className="grid gap-4"
+    >
       <p className="rounded-lg border border-line bg-surface-2 p-3 text-sm text-muted">
-        Library staff will set a temporary password for you. Once they confirm
-        your identity they can share it with you, and you can choose a new one
-        after signing in.
+        Enter the email address on your member account. We&apos;ll send a
+        six-digit code that lets you set a new password yourself — no staff
+        approval needed.
       </p>
       <Field
         label="Email address"
@@ -224,22 +335,8 @@ export function MemberForgotForm() {
         maxLength={254}
         autoFocus
       />
-      <label className="grid gap-1 text-sm">
-        <span className="label">Note for staff (optional)</span>
-        <textarea
-          name="note"
-          rows={3}
-          maxLength={300}
-          className="field w-full"
-          placeholder="For example: I will collect it in person tomorrow."
-        />
-        <span className="hint">
-          Do not include your password. Staff may ask for this note when you
-          come in.
-        </span>
-      </label>
-      <Message state={state} />
-      <Submit pending={pending} label="Send request to library staff" />
+      {lastSubmission === "request" && <Message state={requestState} />}
+      <Submit pending={pending} label="Email me a reset code" />
       <div className="text-center">
         <Link
           href="/member/login"

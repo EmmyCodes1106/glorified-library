@@ -7,6 +7,7 @@ import { authorize } from "@/lib/auth/dal";
 import { logAudit } from "@/lib/auth/audit";
 import { getLendingSettings } from "@/lib/settings";
 import { COVER_TYPES, MAX_COVER_BYTES, deleteCover, saveCoverFile } from "@/lib/covers";
+import { deleteEbookFile } from "@/lib/ebooks";
 import {
   downloadOpenLibraryCover,
   fetchWorkDescription,
@@ -498,6 +499,10 @@ export async function deleteBook(
     };
   }
 
+  const [ebook] = await sql<{ file_name: string }[]>`
+    select file_name from book_files where book_id = ${id}
+  `;
+
   const [deleted] = await sql`
     delete from books where id = ${id}
     returning id, title, cover_path
@@ -505,6 +510,7 @@ export async function deleteBook(
   if (!deleted) return { message: "Book not found." };
 
   await deleteCover(deleted.cover_path);
+  if (ebook) await deleteEbookFile(ebook.file_name);
 
   await logAudit({
     action: "book.deleted",

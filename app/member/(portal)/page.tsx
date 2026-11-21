@@ -11,7 +11,7 @@ import {
   getPortalMember,
 } from "@/lib/member-portal";
 import { formatMoney } from "@/lib/settings";
-import { AlertTriangle, BookOpen, History, Wallet } from "lucide-react";
+import { AlertTriangle, BookOpen, History, Search, Wallet } from "lucide-react";
 import { EmptyState, SectionHeader, StatCard } from "@/components/ui";
 import { LoanStatusBadge, MemberStatusBadge } from "@/components/member-status";
 import MemberLoanActions from "@/components/member-loan-actions";
@@ -64,16 +64,24 @@ async function Overview() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <div className="flex flex-wrap items-center gap-3">
-          <h2 className="break-words text-2xl font-semibold tracking-tight">
-            Welcome back, {member.name}
-          </h2>
-          <MemberStatusBadge status={member.status} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="break-words text-2xl font-semibold tracking-tight">
+              Welcome back, {member.name}
+            </h2>
+            <MemberStatusBadge status={member.status} />
+          </div>
+          <p className="mt-1 text-sm text-muted">
+            {member.member_code} · Member since {member.joined}
+          </p>
         </div>
-        <p className="mt-1 text-sm text-muted">
-          {member.member_code} · Member since {member.joined}
-        </p>
+        {member.status === "active" && (
+          <Link href="/member/catalogue" className="btn btn-primary btn-sm">
+            <Search size={14} aria-hidden="true" />
+            Browse catalogue
+          </Link>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -132,7 +140,15 @@ async function Overview() {
               <EmptyState
                 icon={BookOpen}
                 title="No books on loan"
-                description="Visit the library to borrow your next book."
+                description="Browse the catalogue to borrow your next book online."
+                action={
+                  <Link
+                    href="/member/catalogue"
+                    className="btn btn-secondary btn-sm"
+                  >
+                    Find a book
+                  </Link>
+                }
               />
             </div>
           ) : (
@@ -161,11 +177,21 @@ async function Overview() {
                         : ""}
                     </p>
                   </div>
-                  <MemberLoanActions
-                    loanId={loan.id}
-                    overdue={loan.overdue}
-                    disabled={member.status !== "active"}
-                  />
+                  <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+                    {loan.has_ebook && member.status === "active" && (
+                      <Link
+                        href={`/member/read/${loan.book_id}`}
+                        className="btn btn-sm btn-primary"
+                      >
+                        Read online
+                      </Link>
+                    )}
+                    <MemberLoanActions
+                      loanId={loan.id}
+                      overdue={loan.overdue}
+                      disabled={member.status !== "active"}
+                    />
+                  </div>
                 </li>
               ))}
             </ul>

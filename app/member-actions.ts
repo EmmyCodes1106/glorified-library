@@ -15,10 +15,13 @@ import {
   clearMemberSessionCookie,
   createMemberSession,
   getCurrentMember,
+  revokeAllMemberSessions,
   revokeMemberSession,
   revokeOtherMemberSessions,
 } from "@/lib/member-auth/session";
 import { issueEmailVerification } from "@/lib/email-verification";
+import { notifyBorrowingConfirmation } from "@/lib/notifications";
+import { sendCode, verifyCode } from "@/lib/otp";
 import { getLendingSettings } from "@/lib/settings";
 
 export type MemberFormState = {
@@ -26,6 +29,8 @@ export type MemberFormState = {
   ok?: boolean;
   verifyEmail?: boolean;
   verificationEmail?: string;
+  resetStep?: "code";
+  resetEmail?: string;
 };
 
 const GENERIC_LOGIN_ERROR = "Email or password is incorrect.";
@@ -33,8 +38,10 @@ const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
 const REGISTRATION_LIMIT = 5;
 const REGISTRATION_WINDOW_MINUTES = 15;
-const PASSWORD_REQUEST_LIMIT = 5;
-const PASSWORD_REQUEST_WINDOW_MINUTES = 15;
+const RESET_REQUEST_LIMIT = 5;
+const RESET_REQUEST_WINDOW_MINUTES = 15;
+const RESET_GENERIC =
+  "If that email belongs to a member account, a six-digit reset code is on its way. It expires in 10 minutes.";
 
 const MEMBER_START_PAGES = [
   "/member",
@@ -388,39 +395,35 @@ export async function memberLogoutAction(): Promise<void> {
   redirect("/member/login");
 }
 
-// Members no longer reset their own portal password. A request lands in the
-// Super Administrator queue, and staff set a temporary password from the
-// member profile once they have confirmed the member's identity.
-export async function requestMemberPasswordChangeAction(
+// Members reset their own portal password with a six-digit code emailed to the
+// address on their member record. Staff approval is not part of this path.
+export async function requestMemberResetCodeAction(
   _prev: MemberFormState,
   formData: FormData
 ): Promise<MemberFormState> {
   const email = normaliseEmail(formData.get("email"));
-  const note = String(formData.get("note") ?? "").trim();
-  const generic =
-    "If that email belongs to a member portal account, your request has been sent to library staff.";
+  const context = await requestContext();
+  const fromCodeStep = formData.get("step") === "code";
 
   if (!validEmail(email)) {
     return { message: "Enter a valid email address." };
   }
-  if (note.length > 300) {
-    return { message: "Keep your note to 300 characters or fewer." };
-  }
-
-  const context = await requestContext();
 
   if (context.ipAddress) {
     const [recent] = await sql<{ count: number }[]>`
       select count(*)::int as count
       from audit_logs
-      where action = 'member.portal_password_change_requested'
+      where action = 'member.portal_password_reset_requested'
         and ip_address = ${context.ipAddress}
-        and created_at > now() - ${`${PASSWORD_REQUEST_WINDOW_MINUTES} minutes`}::interval
+        and created_at > now() - ${`${RESET_REQUEST_WINDOW_MINUTES} minutes`}::interval
     `;
-    if (recent.count >= PASSWORD_REQUEST_LIMIT) {
+    if (recent.count >= RESET_REQUEST_LIMIT) {
       return {
         message:
-          "Too many requests from this network. Try again in a few minutes.",
+          "Too many reset requests from this network. Try again in a few minutes.",
+        ...(fromCodeStep
+          ? { resetStep: "code" as const, resetEmail: email }
+          : {}),
       };
     }
   }
@@ -435,35 +438,146 @@ export async function requestMemberPasswordChangeAction(
     limit 1
   `;
 
-  if (member?.email) {
-    const [created] = await sql<{ id: number }[]>`
-      insert into member_password_requests (member_id, note)
-      values (${member.id}, ${note || null})
-      on conflict (member_id) where status = 'pending' do nothing
-      returning id
-    `;
-
-    await logAudit({
-      action: "member.portal_password_change_requested",
-      summary: `Member portal password change requested for ${member.email}`,
-      entityType: "member",
-      entityId: member.id,
-      actor: memberActor(member),
-      context,
-      metadata: { duplicate: !created },
-    });
-  } else {
+  if (!member?.email) {
     await verifyAgainstDummy(email);
     await logAudit({
-      action: "member.portal_password_change_requested",
-      summary: `Member portal password change requested for unknown email ${email}`,
+      action: "member.portal_password_reset_requested",
+      summary: `Member portal password reset requested for unknown email ${email}`,
       actor: { name: "Unknown", email, role: "member" },
       context,
-      metadata: { duplicate: false },
+      metadata: { known: false },
     });
+    return {
+      message: RESET_GENERIC,
+      ok: true,
+      resetStep: "code",
+      resetEmail: email,
+    };
   }
 
-  return { message: generic, ok: true };
+  const delivery = await sendCode(member.email, "reset");
+
+  await logAudit({
+    action: "member.portal_password_reset_requested",
+    summary: `Member portal password reset requested for ${member.email}`,
+    entityType: "member",
+    entityId: member.id,
+    actor: memberActor(member),
+    context,
+    metadata: { known: true, delivery },
+  });
+
+  if (delivery === "failed") {
+    return {
+      message:
+        "We couldn't send the reset email just now. Check the address and try again in a minute.",
+      ...(fromCodeStep
+        ? { resetStep: "code" as const, resetEmail: email }
+        : {}),
+    };
+  }
+
+  return {
+    message:
+      delivery === "cooldown"
+        ? "A code was already sent a moment ago. Check your inbox, or wait a minute before requesting another."
+        : RESET_GENERIC,
+    ok: true,
+    resetStep: "code",
+    resetEmail: email,
+  };
+}
+
+export async function resetMemberPasswordAction(
+  _prev: MemberFormState,
+  formData: FormData
+): Promise<MemberFormState> {
+  const email = normaliseEmail(formData.get("email"));
+  const code = String(formData.get("code") ?? "").replace(/\D/g, "");
+  const password = String(formData.get("password") ?? "");
+  const confirm = String(formData.get("confirmPassword") ?? "");
+  const context = await requestContext();
+
+  if (!validEmail(email)) {
+    return { message: "Enter a valid email address." };
+  }
+  if (code.length !== 6) {
+    return { message: "Enter the six-digit code from your email." };
+  }
+  const policyError = validatePassword(password);
+  if (policyError) return { message: policyError };
+  if (password !== confirm) {
+    return { message: "The two passwords do not match." };
+  }
+
+  const [member] = await sql<
+    { id: number; name: string; email: string | null; password_hash: string }[]
+  >`
+    select id, name, email, password_hash
+    from members
+    where lower(email) = lower(${email})
+      and password_hash is not null
+    limit 1
+  `;
+
+  const valid = member?.email
+    ? await verifyCode(member.email, "reset", code)
+    : false;
+
+  if (!member || !valid) {
+    await logAudit({
+      action: "member.portal_password_reset_failed",
+      summary: `Member portal password reset failed for ${email}`,
+      entityType: member ? "member" : null,
+      entityId: member?.id ?? null,
+      actor: member ? memberActor(member) : { name: "Unknown", email, role: "member" },
+      context,
+      metadata: { known: Boolean(member) },
+    });
+    return {
+      message:
+        "That code is incorrect, expired or no longer usable. Request a new code and try again.",
+      resetStep: "code",
+      resetEmail: email,
+    };
+  }
+
+  const passwordHash = await hashPassword(password);
+
+  await sql.begin(async (tx) => {
+    await tx`
+      update members
+      set
+        password_hash = ${passwordHash},
+        email_verified_at = coalesce(email_verified_at, now()),
+        failed_login_attempts = 0,
+        locked_until = null
+      where id = ${member.id}
+    `;
+    await tx`
+      update member_password_requests
+      set status = 'resolved', resolved_at = now()
+      where member_id = ${member.id} and status = 'pending'
+    `;
+  });
+
+  await revokeAllMemberSessions(member.id);
+
+  await logAudit({
+    action: "member.portal_password_reset",
+    summary: `${member.name} reset their member portal password with an emailed code`,
+    entityType: "member",
+    entityId: member.id,
+    actor: memberActor(member),
+    context,
+    metadata: { method: "email_code" },
+  });
+
+  return {
+    message:
+      "Your password has been updated and every portal session was signed out. Sign in with your new password.",
+    ok: true,
+  };
 }
 
 export async function updateMemberProfileAction(
@@ -669,6 +783,180 @@ export async function renewMyLoan(
   revalidatePath("/fines");
   return {
     message: `"${outcome.title}" renewed · due ${outcome.due}.`,
+    ok: true,
+  };
+}
+
+export async function borrowBook(
+  _prev: MemberFormState,
+  formData: FormData
+): Promise<MemberFormState> {
+  const member = await getCurrentMember();
+  if (!member) return { message: "Your session has expired. Sign in again." };
+
+  const bookId = Number(formData.get("bookId"));
+  if (!Number.isInteger(bookId) || bookId < 1) {
+    return { message: "Book not found." };
+  }
+
+  type BorrowOutcome =
+    | { error: string }
+    | { ok: true; loanId: number; title: string; due: string; days: number };
+
+  let outcome: BorrowOutcome;
+  try {
+    outcome = await sql.begin(async (tx): Promise<BorrowOutcome> => {
+      // lock the member row so parallel clicks cannot exceed the borrowing limit
+      const [me] = await tx<
+        {
+          id: number;
+          name: string;
+          email: string | null;
+          status: string;
+          loan_limit: number;
+          expired: boolean;
+        }[]
+      >`
+        select
+          id,
+          name,
+          email,
+          status,
+          loan_limit,
+          (
+            membership_expires_on is not null
+            and membership_expires_on < current_date
+          ) as expired
+        from members
+        where id = ${member.id}
+        for update
+      `;
+      if (!me) return { error: "Member not found." };
+      if (me.expired) {
+        return {
+          error:
+            "Your membership has expired. Contact the library to renew it before borrowing.",
+        };
+      }
+      if (me.status !== "active") {
+        return {
+          error: `Your membership is ${me.status}. Contact the library to borrow books.`,
+        };
+      }
+      if (me.loan_limit <= 0) {
+        return {
+          error:
+            "Borrowing is disabled for your membership. Contact the library for help.",
+        };
+      }
+
+      const [book] = await tx<
+        { id: number; title: string; total_copies: number }[]
+      >`
+        select id, title, total_copies
+        from books
+        where id = ${bookId}
+        for update
+      `;
+      if (!book) return { error: "Book not found." };
+
+      const [duplicate] = await tx<{ id: number }[]>`
+        select id
+        from loans
+        where member_id = ${me.id}
+          and book_id = ${bookId}
+          and returned_on is null
+      `;
+      if (duplicate) {
+        return {
+          error: `You already have "${book.title}" on loan. Renew it from My loans instead.`,
+        };
+      }
+
+      const [open] = await tx<{ count: number }[]>`
+        select count(*)::int as count
+        from loans
+        where book_id = ${bookId} and returned_on is null
+      `;
+      if (open.count >= book.total_copies) {
+        return {
+          error: `All copies of "${book.title}" are on loan right now. Try again when one is returned.`,
+        };
+      }
+
+      const [held] = await tx<{ count: number }[]>`
+        select count(*)::int as count
+        from loans
+        where member_id = ${me.id} and returned_on is null
+      `;
+      if (held.count >= me.loan_limit) {
+        return {
+          error: `You already have ${held.count} of ${me.loan_limit} books allowed on loan. Return one before borrowing another.`,
+        };
+      }
+
+      const [settings] = await tx<{ default_loan_days: number }[]>`
+        select default_loan_days from circulation_settings where id
+      `;
+      const days = settings?.default_loan_days ?? 14;
+
+      const [created] = await tx<{ id: number; due: string }[]>`
+        insert into loans (book_id, member_id, borrowed_on, due_on, duration_days)
+        values (
+          ${bookId}, ${me.id}, current_date,
+          current_date + ${days}::int, ${days}
+        )
+        returning id, to_char(due_on, 'DD Mon YYYY') as due
+      `;
+
+      return {
+        ok: true as const,
+        loanId: created.id,
+        title: book.title,
+        due: created.due,
+        days,
+      };
+    });
+  } catch (error) {
+    if ((error as { code?: string }).code === "23505") {
+      return {
+        message:
+          "You already have a copy of this book on loan. Renew it from My loans instead.",
+      };
+    }
+    throw error;
+  }
+
+  if ("error" in outcome) return { message: outcome.error };
+
+  await logAudit({
+    action: "member.loan_created",
+    summary: `${member.name} borrowed "${outcome.title}" from the member portal`,
+    entityType: "loan",
+    entityId: outcome.loanId,
+    actor: memberActor(member),
+    metadata: { days: outcome.days, due: outcome.due, memberId: member.id },
+  });
+
+  revalidatePath("/member");
+  revalidatePath("/member/catalogue");
+  revalidatePath("/member/loans");
+  revalidatePath("/member/history");
+  revalidatePath("/member/fines");
+  revalidatePath("/dashboard");
+  revalidatePath("/members");
+  revalidatePath(`/members/${member.id}`);
+  revalidatePath("/circulation");
+  revalidatePath("/fines");
+
+  try {
+    await notifyBorrowingConfirmation(outcome.loanId);
+  } catch (error) {
+    console.error("Notification delivery failed:", error);
+  }
+
+  return {
+    message: `"${outcome.title}" is now on loan · due ${outcome.due}.`,
     ok: true,
   };
 }

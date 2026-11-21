@@ -65,12 +65,23 @@ function normalizeDoc(doc: Record<string, unknown>): OpenLibraryBook | null {
   };
 }
 
-export async function searchOpenLibrary(
-  query: string
-): Promise<OpenLibraryBook[]> {
+export type OpenLibrarySearchPage = {
+  books: OpenLibraryBook[];
+  total: number;
+};
+
+export const OPEN_LIBRARY_PAGE_LIMIT = 100;
+export const OPEN_LIBRARY_MAX_RESULTS = 10_000;
+
+async function requestSearch(
+  query: string,
+  page: number,
+  limit: number
+): Promise<OpenLibrarySearchPage> {
   const url = `${API_BASE}/search.json?${new URLSearchParams({
     q: query,
-    limit: "8",
+    page: String(page),
+    limit: String(limit),
     fields: SEARCH_FIELDS,
   })}`;
   const response = await fetch(url, {
@@ -79,14 +90,33 @@ export async function searchOpenLibrary(
   });
   if (!response.ok) throw new Error(`Open Library responded ${response.status}`);
 
-  const data = (await response.json()) as { docs?: unknown[] };
-  return asArray(data.docs)
-    .map((doc) =>
-      typeof doc === "object" && doc !== null
-        ? normalizeDoc(doc as Record<string, unknown>)
-        : null
-    )
-    .filter((book): book is OpenLibraryBook => book !== null);
+  const data = (await response.json()) as { docs?: unknown[]; numFound?: unknown };
+  const total = Number(data.numFound);
+  return {
+    books: asArray(data.docs)
+      .map((doc) =>
+        typeof doc === "object" && doc !== null
+          ? normalizeDoc(doc as Record<string, unknown>)
+          : null
+      )
+      .filter((book): book is OpenLibraryBook => book !== null),
+    total: Number.isInteger(total) && total > 0 ? total : 0,
+  };
+}
+
+export async function searchOpenLibrary(
+  query: string
+): Promise<OpenLibraryBook[]> {
+  const { books } = await requestSearch(query, 1, 8);
+  return books;
+}
+
+export async function searchOpenLibraryPage(
+  query: string,
+  page: number,
+  limit: number
+): Promise<OpenLibrarySearchPage> {
+  return requestSearch(query, page, limit);
 }
 
 export async function fetchWorkDescription(

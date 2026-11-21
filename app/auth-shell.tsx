@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import LibraryLogo from "@/components/library-logo";
+import ThemeToggle from "@/components/theme-toggle";
 import { getLibraryIdentity, todayHoursLabel } from "@/lib/settings";
 
 export default async function AuthShell({
@@ -21,6 +22,9 @@ export default async function AuthShell({
 
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-10">
+      <div className="fixed right-4 top-4 z-20">
+        <ThemeToggle />
+      </div>
       <div className="w-full max-w-md">
         <div className="mb-6 text-center">
           <LibraryLogo className="mx-auto mb-3 h-20 w-40" />

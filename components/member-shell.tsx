@@ -7,15 +7,23 @@ import {
   BookOpen,
   History,
   LayoutDashboard,
+  LibraryBig,
   LogOut,
   ReceiptText,
   UserRound,
 } from "lucide-react";
 import { memberLogoutAction } from "@/app/member-actions";
 import LibraryLogo from "./library-logo";
+import ThemeToggle from "./theme-toggle";
 
 const NAV_ITEMS = [
   { href: "/member", label: "Overview", icon: LayoutDashboard, exact: true },
+  {
+    href: "/member/catalogue",
+    label: "Catalogue",
+    icon: LibraryBig,
+    exact: false,
+  },
   { href: "/member/loans", label: "My loans", icon: BookOpen, exact: false },
   { href: "/member/history", label: "History", icon: History, exact: false },
   { href: "/member/fines", label: "Fines", icon: ReceiptText, exact: false },
@@ -88,7 +96,7 @@ export default function MemberShell({
       </a>
 
       <header className="sticky top-0 z-30 border-b border-line bg-surface">
-        <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-4 sm:px-6">
+        <div className="mx-auto flex h-16 w-full max-w-[1440px] items-center gap-3 px-4 sm:px-6 lg:px-8">
           <Link
             href="/member"
             className="flex min-w-0 items-center gap-2.5 rounded-lg outline-offset-4"
@@ -104,11 +112,14 @@ export default function MemberShell({
             </span>
           </Link>
 
-          <div className="ml-4 hidden md:block">
+          <div className="ml-4 hidden xl:block">
             <MemberNavigation pathname={pathname} />
           </div>
 
           <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
+            <div className="hidden xl:block">
+              <ThemeToggle />
+            </div>
             <div className="hidden text-right leading-tight sm:block">
               <p className="max-w-[180px] truncate text-xs font-semibold text-foreground">
                 {member.name}
@@ -124,10 +135,15 @@ export default function MemberShell({
           </div>
         </div>
 
-        <div className="border-t border-line px-2 py-1.5 md:hidden">
-          <div className="overflow-x-auto">
-            <div className="px-2">
-              <MemberNavigation pathname={pathname} />
+        <div className="border-t border-line px-2 py-1.5 xl:hidden">
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1 overflow-x-auto">
+              <div className="px-2">
+                <MemberNavigation pathname={pathname} />
+              </div>
+            </div>
+            <div className="shrink-0 pr-1">
+              <ThemeToggle />
             </div>
           </div>
         </div>
@@ -138,7 +154,7 @@ export default function MemberShell({
           role="alert"
           className="border-b border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning"
         >
-          <div className="mx-auto max-w-6xl">
+          <div className="mx-auto max-w-[1440px]">
             {member.status === "suspended"
               ? "Your membership is suspended, so new loans cannot be issued. Contact the library to reactivate it."
               : "Your membership has expired. Contact the library to renew it before borrowing again."}
@@ -148,13 +164,13 @@ export default function MemberShell({
 
       <main
         id="main-content"
-        className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:py-8"
+        className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8"
       >
         {children}
       </main>
 
       <footer className="border-t border-line bg-surface">
-        <div className="mx-auto w-full max-w-6xl space-y-1 px-4 py-5 text-xs text-muted sm:px-6">
+        <div className="mx-auto w-full max-w-[1440px] space-y-1 px-4 py-5 text-xs text-muted sm:px-6 lg:px-8">
           <p>
             Open today:{" "}
             <span className="font-medium text-muted-strong">

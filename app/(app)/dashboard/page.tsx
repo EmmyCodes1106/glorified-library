@@ -112,7 +112,7 @@ async function PasswordRequests() {
         <SectionHeader
           id="password-requests-heading"
           title="Member password requests"
-          description="Members waiting for a temporary portal password."
+          description="Members waiting for a staff-issued temporary portal password."
           action={
             <span
               className={`badge ${
@@ -127,8 +127,8 @@ async function PasswordRequests() {
       <div className="card p-5">
         {requests.length === 0 ? (
           <p className="text-sm text-muted">
-            No pending requests. They appear here when a member asks for a
-            password reset from the member sign-in page.
+            No one is waiting for a staff-issued temporary password. Members
+            now reset their own passwords with an emailed code.
           </p>
         ) : (
           <ul className="divide-y">

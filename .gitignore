@@ -43,3 +43,6 @@ next-env.d.ts
 
 # uploaded book covers
 /public/uploads/
+
+# digital copies (EPUBs) stay outside the web root
+/storage/
